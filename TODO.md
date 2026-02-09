@@ -1,60 +1,93 @@
 # Cedis TODO
 
-## Phase 5 — Pub/Sub
+## Completed
 
-- [ ] Implement channel-based publish/subscribe messaging
-- [ ] Per-connection message channels using `tokio::sync::broadcast` or similar
-- [ ] Commands: `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`, `PSUBSCRIBE`, `PUNSUBSCRIBE`
-- [ ] `PUBSUB` subcommands: `CHANNELS`, `NUMSUB`, `NUMPAT`
-- [ ] Clients in subscribe mode should only accept `(P)SUBSCRIBE`, `(P)UNSUBSCRIBE`, `PING`, `QUIT`
+- [x] Pub/Sub: SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB (CHANNELS/NUMSUB/NUMPAT)
+- [x] RDB persistence: SAVE, BGSAVE, load on startup, key expiry in RDB
+- [x] AOF persistence: append-only file, fsync policies (always/everysec/no), AOF replay, BGREWRITEAOF
+- [x] Blocking list commands: BLPOP, BRPOP (non-blocking fallback), LMPOP
+- [x] SORT command (ASC/DESC, ALPHA, LIMIT, STORE)
+- [x] Graceful shutdown on SIGINT/SIGTERM
+- [x] Client idle timeout support
+- [x] Expanded test coverage: 81 tests (30 unit + 51 integration)
+- [x] Benchmark suite: 30-40K ops/sec single-client, 275K ops/sec pipelined
 
-## Phase 6 — RDB Persistence
+## Phase 9 — True Blocking Commands
 
-- [ ] Implement RDB binary snapshot format writer (serialize current state to disk)
-- [ ] `SAVE` (blocking) and `BGSAVE` (background task)
-- [ ] RDB file reader — load state on startup if file exists
-- [ ] Auto-save rules (save after N changes in M seconds)
-- [ ] Key expiry entries in RDB format
+- [ ] Implement real blocking for BLPOP/BRPOP using `tokio::sync::Notify`
+- [ ] Client wake-up when data is pushed to a watched key
+- [ ] BLMOVE with blocking semantics
+- [ ] BZPOPMIN, BZPOPMAX for sorted sets
+- [ ] Timeout handling with `tokio::time::timeout`
 
-## Phase 7 — AOF Persistence
+## Phase 10 — Auto-Save & Persistence Improvements
 
-- [ ] Log every write command to an append-only file
-- [ ] Support fsync policies: `always`, `everysec`, `no`
-- [ ] AOF loading on startup (replay commands)
-- [ ] `BGREWRITEAOF` for log compaction
-- [ ] `CONFIG SET appendonly yes/no` to enable/disable at runtime
+- [ ] Auto-save rules: trigger RDB save after N changes in M seconds (use save_rules config)
+- [ ] Track change counter across write commands
+- [ ] AOF rewrite triggered automatically based on AOF size
+- [ ] CONFIG SET appendonly yes/no to toggle AOF at runtime
+- [ ] Track and return actual last save timestamp for LASTSAVE
 
-## Phase 8 — Blocking Commands
+## Phase 11 — Streams
 
-- [ ] `BLPOP`, `BRPOP` with timeout and client wake-up
-- [ ] `BLMOVE`
-- [ ] `BZPOPMIN`, `BZPOPMAX`
-- [ ] Client wake-up mechanism using `tokio::sync::Notify` or similar
+- [ ] Implement stream data type (time-series log)
+- [ ] XADD, XLEN, XRANGE, XREVRANGE
+- [ ] XREAD with blocking support
+- [ ] XTRIM (maxlen, minid)
+- [ ] Consumer groups: XGROUP CREATE, XREADGROUP, XACK, XPENDING
 
-## Infrastructure
+## Phase 12 — Lua Scripting
 
-- [ ] Graceful shutdown on `SIGINT`/`SIGTERM` using `tokio::signal`
-- [ ] Client idle timeout support (close connections idle longer than configured `timeout`)
+- [ ] Embed a Lua interpreter (mlua or rlua)
+- [ ] EVAL, EVALSHA commands
+- [ ] SCRIPT LOAD, SCRIPT EXISTS, SCRIPT FLUSH
+- [ ] Redis-compatible Lua API: redis.call(), redis.pcall()
+- [ ] Key isolation (KEYS/ARGV arguments)
 
-## Missing Commands
+## Phase 13 — Cluster & Replication Basics
 
-- [ ] `SORT` command (BY, GET, ASC/DESC, ALPHA, LIMIT, STORE)
-- [ ] `LMPOP`
-- [ ] Review all existing commands against Redis docs for missing edge cases or flags
+- [ ] REPLICAOF/SLAVEOF command (basic primary-replica)
+- [ ] Full sync via RDB transfer
+- [ ] Replication offset tracking
+- [ ] WAIT command for synchronous replication
 
-## Testing & Performance
+## Phase 14 — Performance Optimization
 
-- [ ] Expand integration test coverage (concurrent clients, pipelining stress, binary-safe keys/values, error cases, large datasets, expiration edge cases)
-- [ ] Add tests for less-covered commands: `GETDEL`, `LPOS`, `SINTERCARD`, sorted set lex operations
-- [ ] Target: ~100 tests total
-- [ ] Run `redis-benchmark` and measure throughput for `GET`/`SET`/`LPUSH`/`LPOP`/`SADD`/`ZADD`
-- [ ] Profile and optimize hot paths (RESP parser, lock contention, allocations)
-- [ ] Target: at least 50% of real Redis throughput for `GET`/`SET`
+- [ ] Profile with flamegraph to identify hot paths
+- [ ] Reduce lock contention (per-database locks vs global RwLock)
+- [ ] Zero-copy RESP parsing where possible
+- [ ] Connection pooling / multiplexing
+- [ ] Optimize sorted set operations for large cardinalities
+- [ ] Memory-efficient small object encodings (ziplist/listpack equivalents)
+- [ ] Target: approach real Redis throughput for GET/SET
 
-## Stretch Goals
+## Phase 15 — Observability & Admin
 
-- [ ] Streams (`XADD`, `XREAD`, `XRANGE`, `XLEN`, consumer groups)
-- [ ] Lua scripting (`EVAL`, `EVALSHA`, `SCRIPT`)
-- [ ] Basic replication (`REPLICAOF`, full sync via RDB)
-- [ ] `MEMORY USAGE`, `SLOWLOG`, `MONITOR`
-- [ ] Run against Redis's own TCL test suite in external mode
+- [ ] MEMORY USAGE command
+- [ ] SLOWLOG (track slow commands)
+- [ ] MONITOR command (real-time command stream)
+- [ ] CLIENT LIST with full connection metadata
+- [ ] More accurate INFO sections (memory, stats, keyspace)
+- [ ] OBJECT ENCODING with proper encoding detection
+
+## Phase 16 — Missing Commands & Compatibility
+
+- [ ] COPY command
+- [ ] OBJECT FREQ, OBJECT HELP improvements
+- [ ] WAIT command
+- [ ] HELLO command (RESP3 negotiation stub)
+- [ ] ACL commands (basic user/password management)
+- [ ] SRANDMEMBER with count, SPOP with count
+- [ ] GEORADIUS / GEOADD / GEODIST (geo commands)
+- [ ] HyperLogLog: PFADD, PFCOUNT, PFMERGE
+- [ ] Bitmap: SETBIT, GETBIT, BITCOUNT, BITOP, BITPOS, BITFIELD
+- [ ] Run against Redis TCL test suite in external mode
+
+## Phase 17 — Production Hardening
+
+- [ ] Maxmemory enforcement with eviction policies (LRU, LFU, random, volatile)
+- [ ] Protected mode (refuse external connections without password)
+- [ ] TLS support via tokio-rustls
+- [ ] Unix socket support
+- [ ] Configurable TCP backlog and keep-alive
+- [ ] Better error handling and recovery for persistence failures

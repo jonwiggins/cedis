@@ -483,3 +483,126 @@ pub fn cmd_dump(_args: &[RespValue]) -> RespValue {
 pub fn cmd_restore(_args: &[RespValue]) -> RespValue {
     RespValue::error("ERR RESTORE not yet implemented")
 }
+
+pub async fn cmd_sort(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.is_empty() {
+        return wrong_arg_count("sort");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    // Parse options
+    let mut alpha = false;
+    let mut desc = false;
+    let mut limit_offset: Option<usize> = None;
+    let mut limit_count: Option<usize> = None;
+    let mut store_dest: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        let opt = match arg_to_string(&args[i]) {
+            Some(s) => s.to_uppercase(),
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+        match opt.as_str() {
+            "ASC" => desc = false,
+            "DESC" => desc = true,
+            "ALPHA" => alpha = true,
+            "LIMIT" => {
+                if i + 2 < args.len() {
+                    limit_offset = arg_to_i64(&args[i + 1]).map(|n| n.max(0) as usize);
+                    limit_count = arg_to_i64(&args[i + 2]).map(|n| n.max(0) as usize);
+                    i += 2;
+                } else {
+                    return RespValue::error("ERR syntax error");
+                }
+            }
+            "STORE" => {
+                if i + 1 < args.len() {
+                    store_dest = arg_to_string(&args[i + 1]);
+                    i += 1;
+                } else {
+                    return RespValue::error("ERR syntax error");
+                }
+            }
+            "BY" | "GET" => {
+                // Skip the pattern argument (BY/GET patterns not fully supported)
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let mut store_lock = store.write().await;
+    let db = store_lock.db(client.db_index);
+
+    // Get the elements to sort
+    let mut elements: Vec<Vec<u8>> = match db.get(&key) {
+        Some(entry) => match &entry.value {
+            crate::types::RedisValue::List(list) => list.iter().cloned().collect(),
+            crate::types::RedisValue::Set(set) => set.members().into_iter().cloned().collect(),
+            crate::types::RedisValue::SortedSet(zset) => {
+                zset.iter().map(|(m, _)| m.to_vec()).collect()
+            }
+            _ => return crate::command::wrong_type_error(),
+        },
+        None => vec![],
+    };
+
+    // Sort
+    if alpha {
+        elements.sort();
+        if desc {
+            elements.reverse();
+        }
+    } else {
+        // Numeric sort
+        elements.sort_by(|a, b| {
+            let a_num: f64 = String::from_utf8_lossy(a).parse().unwrap_or(0.0);
+            let b_num: f64 = String::from_utf8_lossy(b).parse().unwrap_or(0.0);
+            a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if desc {
+            elements.reverse();
+        }
+    }
+
+    // Apply LIMIT
+    if let (Some(offset), Some(count)) = (limit_offset, limit_count) {
+        if offset < elements.len() {
+            elements = elements[offset..].to_vec();
+            elements.truncate(count);
+        } else {
+            elements.clear();
+        }
+    }
+
+    // STORE or return
+    if let Some(dest) = store_dest {
+        let len = elements.len() as i64;
+        let mut list = crate::types::list::RedisList::new();
+        for elem in elements {
+            list.rpush(elem);
+        }
+        db.set(
+            dest,
+            crate::store::entry::Entry::new(crate::types::RedisValue::List(list)),
+        );
+        RespValue::integer(len)
+    } else {
+        let items: Vec<RespValue> = elements
+            .into_iter()
+            .map(RespValue::bulk_string)
+            .collect();
+        RespValue::array(items)
+    }
+}

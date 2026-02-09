@@ -1,6 +1,7 @@
 use crate::command::{arg_to_i64, arg_to_string, wrong_arg_count};
 use crate::config::SharedConfig;
 use crate::connection::ClientState;
+use crate::persistence;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
 
@@ -357,4 +358,58 @@ pub fn cmd_reset(client: &mut ClientState) -> RespValue {
     client.watched_keys.clear();
     client.name = None;
     RespValue::SimpleString("RESET".to_string())
+}
+
+pub async fn cmd_save(store: &SharedStore, config: &SharedConfig) -> RespValue {
+    let store = store.read().await;
+    let cfg = config.read().await;
+    let path = format!("{}/{}", cfg.dir, cfg.dbfilename);
+    drop(cfg);
+
+    match persistence::rdb::save(&store, &path) {
+        Ok(()) => RespValue::ok(),
+        Err(e) => RespValue::error(format!("ERR {e}")),
+    }
+}
+
+pub async fn cmd_bgsave(store: &SharedStore, config: &SharedConfig) -> RespValue {
+    let store = store.clone();
+    let config = config.clone();
+    tokio::spawn(async move {
+        let store = store.read().await;
+        let cfg = config.read().await;
+        let path = format!("{}/{}", cfg.dir, cfg.dbfilename);
+        drop(cfg);
+        if let Err(e) = persistence::rdb::save(&store, &path) {
+            tracing::warn!("Background save failed: {e}");
+        } else {
+            tracing::info!("Background save completed");
+        }
+    });
+    RespValue::SimpleString("Background saving started".to_string())
+}
+
+pub async fn cmd_bgrewriteaof(store: &SharedStore, config: &SharedConfig) -> RespValue {
+    let store = store.clone();
+    let config = config.clone();
+    tokio::spawn(async move {
+        let store = store.read().await;
+        let cfg = config.read().await;
+        let path = format!("{}/appendonly.aof", cfg.dir);
+        drop(cfg);
+        if let Err(e) = persistence::aof::rewrite(&store, &path) {
+            tracing::warn!("Background AOF rewrite failed: {e}");
+        } else {
+            tracing::info!("Background AOF rewrite completed");
+        }
+    });
+    RespValue::SimpleString("Background append only file rewriting started".to_string())
+}
+
+pub fn cmd_lastsave() -> RespValue {
+    // Return current time as an approximation (no global last-save timestamp tracked)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before UNIX epoch");
+    RespValue::integer(now.as_secs() as i64)
 }

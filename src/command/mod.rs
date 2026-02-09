@@ -10,8 +10,10 @@ pub mod transaction;
 
 use crate::config::SharedConfig;
 use crate::connection::ClientState;
+use crate::pubsub::SharedPubSub;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
+use tokio::sync::mpsc;
 
 /// Dispatch a parsed command to the appropriate handler.
 pub async fn dispatch(
@@ -20,6 +22,8 @@ pub async fn dispatch(
     store: &SharedStore,
     config: &SharedConfig,
     client: &mut ClientState,
+    pubsub: &SharedPubSub,
+    pubsub_tx: &mpsc::UnboundedSender<RespValue>,
 ) -> RespValue {
     // If in MULTI mode and this isn't EXEC/DISCARD/MULTI, queue the command
     if client.in_multi && !matches!(cmd_name, "EXEC" | "DISCARD" | "MULTI") {
@@ -71,7 +75,7 @@ pub async fn dispatch(
 
         // Keys
         "DEL" => key::cmd_del(args, store, client).await,
-        "UNLINK" => key::cmd_del(args, store, client).await, // same as DEL in our impl
+        "UNLINK" => key::cmd_del(args, store, client).await,
         "EXISTS" => key::cmd_exists(args, store, client).await,
         "EXPIRE" => key::cmd_expire(args, store, client).await,
         "PEXPIRE" => key::cmd_pexpire(args, store, client).await,
@@ -89,6 +93,7 @@ pub async fn dispatch(
         "OBJECT" => key::cmd_object(args, store, client).await,
         "DUMP" => key::cmd_dump(args),
         "RESTORE" => key::cmd_restore(args),
+        "SORT" => key::cmd_sort(args, store, client).await,
 
         // Lists
         "LPUSH" => list::cmd_lpush(args, store, client).await,
@@ -105,6 +110,9 @@ pub async fn dispatch(
         "RPOPLPUSH" => list::cmd_rpoplpush(args, store, client).await,
         "LMOVE" => list::cmd_lmove(args, store, client).await,
         "LPOS" => list::cmd_lpos(args, store, client).await,
+        "LMPOP" => list::cmd_lmpop(args, store, client).await,
+        "BLPOP" => list::cmd_blpop(args, store, client).await,
+        "BRPOP" => list::cmd_brpop(args, store, client).await,
 
         // Hashes
         "HSET" => hash::cmd_hset(args, store, client).await,
@@ -115,7 +123,7 @@ pub async fn dispatch(
         "HKEYS" => hash::cmd_hkeys(args, store, client).await,
         "HVALS" => hash::cmd_hvals(args, store, client).await,
         "HGETALL" => hash::cmd_hgetall(args, store, client).await,
-        "HMSET" => hash::cmd_hset(args, store, client).await, // same as HSET
+        "HMSET" => hash::cmd_hset(args, store, client).await,
         "HMGET" => hash::cmd_hmget(args, store, client).await,
         "HINCRBY" => hash::cmd_hincrby(args, store, client).await,
         "HINCRBYFLOAT" => hash::cmd_hincrbyfloat(args, store, client).await,
@@ -168,20 +176,24 @@ pub async fn dispatch(
 
         // Transactions
         "MULTI" => transaction::cmd_multi(client),
-        "EXEC" => transaction::cmd_exec(store, config, client).await,
+        "EXEC" => transaction::cmd_exec(store, config, client, pubsub, pubsub_tx).await,
         "DISCARD" => transaction::cmd_discard(client),
         "WATCH" => transaction::cmd_watch(args, store, client).await,
         "UNWATCH" => transaction::cmd_unwatch(client),
 
-        // Pub/Sub (stubbed for now)
-        "SUBSCRIBE" | "UNSUBSCRIBE" | "PUBLISH" | "PSUBSCRIBE" | "PUNSUBSCRIBE" => {
-            RespValue::error("ERR Pub/Sub not yet implemented")
-        }
+        // Pub/Sub
+        "SUBSCRIBE" => pubsub::cmd_subscribe(args, client, pubsub, pubsub_tx).await,
+        "UNSUBSCRIBE" => pubsub::cmd_unsubscribe(args, client, pubsub, pubsub_tx).await,
+        "PSUBSCRIBE" => pubsub::cmd_psubscribe(args, client, pubsub, pubsub_tx).await,
+        "PUNSUBSCRIBE" => pubsub::cmd_punsubscribe(args, client, pubsub, pubsub_tx).await,
+        "PUBLISH" => pubsub::cmd_publish(args, pubsub).await,
+        "PUBSUB" => pubsub::cmd_pubsub(args, pubsub).await,
 
-        // Persistence (stubbed for now)
-        "SAVE" | "BGSAVE" | "BGREWRITEAOF" | "LASTSAVE" => {
-            RespValue::ok()
-        }
+        // Persistence
+        "SAVE" => server_cmd::cmd_save(store, config).await,
+        "BGSAVE" => server_cmd::cmd_bgsave(store, config).await,
+        "BGREWRITEAOF" => server_cmd::cmd_bgrewriteaof(store, config).await,
+        "LASTSAVE" => server_cmd::cmd_lastsave(),
 
         _ => {
             let args_preview: Vec<String> = args

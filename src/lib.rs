@@ -4,14 +4,16 @@
 //!
 //! Cedis speaks the RESP2 protocol and implements Redis's core data structures
 //! (strings, lists, hashes, sets, sorted sets) along with key expiration,
-//! transactions, and a configurable server — all without using any existing
-//! Redis or RESP libraries.
+//! transactions, pub/sub, persistence, and a configurable server — all without
+//! using any existing Redis or RESP libraries.
 
 pub mod command;
 pub mod config;
 pub mod connection;
 pub mod error;
 pub mod glob;
+pub mod persistence;
+pub mod pubsub;
 pub mod resp;
 pub mod server;
 pub mod store;

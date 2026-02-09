@@ -1,7 +1,9 @@
 use crate::config::SharedConfig;
 use crate::connection::ClientState;
+use crate::pubsub::SharedPubSub;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
+use tokio::sync::mpsc;
 
 pub fn cmd_multi(client: &mut ClientState) -> RespValue {
     if client.in_multi {
@@ -16,6 +18,8 @@ pub fn cmd_exec<'a>(
     store: &'a SharedStore,
     config: &'a SharedConfig,
     client: &'a mut ClientState,
+    pubsub: &'a SharedPubSub,
+    pubsub_tx: &'a mpsc::UnboundedSender<RespValue>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RespValue> + Send + 'a>> {
     Box::pin(async move {
         if !client.in_multi {
@@ -39,7 +43,7 @@ pub fn cmd_exec<'a>(
         let mut results = Vec::with_capacity(queue.len());
         for (cmd_name, args) in queue {
             let result =
-                crate::command::dispatch(&cmd_name, &args, store, config, client).await;
+                crate::command::dispatch(&cmd_name, &args, store, config, client, pubsub, pubsub_tx).await;
             results.push(result);
         }
 

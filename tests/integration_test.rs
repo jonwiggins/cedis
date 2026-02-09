@@ -1,6 +1,6 @@
 use redis::Commands;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 fn start_server(port: u16) -> tokio::task::JoinHandle<()> {
     let config = cedis::config::Config {
@@ -10,9 +10,11 @@ fn start_server(port: u16) -> tokio::task::JoinHandle<()> {
     let num_dbs = config.databases;
     let config = Arc::new(RwLock::new(config));
     let store = Arc::new(RwLock::new(cedis::store::DataStore::new(num_dbs)));
+    let pubsub = Arc::new(RwLock::new(cedis::pubsub::PubSubRegistry::new()));
+    let aof = Arc::new(Mutex::new(cedis::persistence::aof::AofWriter::new()));
 
     tokio::spawn(async move {
-        let _ = cedis::server::run_server(store, config).await;
+        let _ = cedis::server::run_server(store, config, pubsub, aof).await;
     })
 }
 
@@ -539,6 +541,803 @@ async fn test_config_get_set() {
             .arg("20")
             .query(&mut conn)
             .unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_sort_alpha() {
+    let port = 16400;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.rpush("mylist", "banana").unwrap();
+        let _: () = conn.rpush("mylist", "apple").unwrap();
+        let _: () = conn.rpush("mylist", "cherry").unwrap();
+
+        let sorted: Vec<String> = redis::cmd("SORT")
+            .arg("mylist")
+            .arg("ALPHA")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(sorted, vec!["apple", "banana", "cherry"]);
+
+        let sorted_desc: Vec<String> = redis::cmd("SORT")
+            .arg("mylist")
+            .arg("ALPHA")
+            .arg("DESC")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(sorted_desc, vec!["cherry", "banana", "apple"]);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_sort_numeric() {
+    let port = 16401;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.rpush("nums", "3").unwrap();
+        let _: () = conn.rpush("nums", "1").unwrap();
+        let _: () = conn.rpush("nums", "2").unwrap();
+        let _: () = conn.rpush("nums", "10").unwrap();
+
+        let sorted: Vec<String> = redis::cmd("SORT")
+            .arg("nums")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(sorted, vec!["1", "2", "3", "10"]);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_sort_limit() {
+    let port = 16402;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        for i in 1..=5 {
+            let _: () = conn.rpush("nums", i.to_string().as_str()).unwrap();
+        }
+
+        let sorted: Vec<String> = redis::cmd("SORT")
+            .arg("nums")
+            .arg("LIMIT")
+            .arg("1")
+            .arg("2")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(sorted, vec!["2", "3"]);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_blpop_with_data() {
+    let port = 16403;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.rpush("list1", "a").unwrap();
+        let _: () = conn.rpush("list1", "b").unwrap();
+
+        let result: (String, String) = redis::cmd("BLPOP")
+            .arg("list1")
+            .arg("0")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result, ("list1".to_string(), "a".to_string()));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_brpop_with_data() {
+    let port = 16404;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.rpush("list1", "a").unwrap();
+        let _: () = conn.rpush("list1", "b").unwrap();
+
+        let result: (String, String) = redis::cmd("BRPOP")
+            .arg("list1")
+            .arg("0")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result, ("list1".to_string(), "b".to_string()));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_pubsub_publish() {
+    let port = 16405;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // PUBLISH when no subscribers returns 0
+        let count: i64 = redis::cmd("PUBLISH")
+            .arg("mychannel")
+            .arg("hello")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(count, 0);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_save_command() {
+    let port = 16406;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Set some data first
+        let _: () = conn.set("key1", "val1").unwrap();
+
+        // SAVE should return OK
+        let result: String = redis::cmd("SAVE").query(&mut conn).unwrap();
+        assert_eq!(result, "OK");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_bgsave_command() {
+    let port = 16407;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let result: String = redis::cmd("BGSAVE").query(&mut conn).unwrap();
+        assert_eq!(result, "Background saving started");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_lastsave_command() {
+    let port = 16408;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let result: i64 = redis::cmd("LASTSAVE").query(&mut conn).unwrap();
+        assert!(result > 0);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_select_database() {
+    let port = 16409;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Set in db 0
+        let _: () = conn.set("key", "db0val").unwrap();
+
+        // Switch to db 1
+        let _: () = redis::cmd("SELECT").arg("1").query(&mut conn).unwrap();
+        let result: Option<String> = conn.get("key").unwrap();
+        assert_eq!(result, None);
+
+        // Set in db 1
+        let _: () = conn.set("key", "db1val").unwrap();
+
+        // Switch back to db 0
+        let _: () = redis::cmd("SELECT").arg("0").query(&mut conn).unwrap();
+        let val: String = conn.get("key").unwrap();
+        assert_eq!(val, "db0val");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_getset() {
+    let port = 16410;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // GETSET on non-existent key
+        let old: Option<String> = redis::cmd("GETSET")
+            .arg("mykey")
+            .arg("newval")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(old, None);
+
+        // GETSET replaces and returns old
+        let old: String = redis::cmd("GETSET")
+            .arg("mykey")
+            .arg("newerval")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(old, "newval");
+
+        let current: String = conn.get("mykey").unwrap();
+        assert_eq!(current, "newerval");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_setex_psetex() {
+    let port = 16411;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // SETEX
+        let _: () = redis::cmd("SETEX")
+            .arg("mykey")
+            .arg("100")
+            .arg("myval")
+            .query(&mut conn)
+            .unwrap();
+        let val: String = conn.get("mykey").unwrap();
+        assert_eq!(val, "myval");
+        let ttl: i64 = conn.ttl("mykey").unwrap();
+        assert!(ttl > 0 && ttl <= 100);
+
+        // PSETEX
+        let _: () = redis::cmd("PSETEX")
+            .arg("mskey")
+            .arg("100000")
+            .arg("msval")
+            .query(&mut conn)
+            .unwrap();
+        let val: String = conn.get("mskey").unwrap();
+        assert_eq!(val, "msval");
+        let pttl: i64 = conn.pttl("mskey").unwrap();
+        assert!(pttl > 0 && pttl <= 100000);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_getrange_setrange() {
+    let port = 16412;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.set("mykey", "Hello, World!").unwrap();
+
+        let substr: String = redis::cmd("GETRANGE")
+            .arg("mykey")
+            .arg("0")
+            .arg("4")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(substr, "Hello");
+
+        let _: i64 = redis::cmd("SETRANGE")
+            .arg("mykey")
+            .arg("7")
+            .arg("Redis!")
+            .query(&mut conn)
+            .unwrap();
+        let val: String = conn.get("mykey").unwrap();
+        assert_eq!(val, "Hello, Redis!");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_linsert() {
+    let port = 16413;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.rpush("mylist", "a").unwrap();
+        let _: () = conn.rpush("mylist", "c").unwrap();
+
+        let len: i64 = redis::cmd("LINSERT")
+            .arg("mylist")
+            .arg("BEFORE")
+            .arg("c")
+            .arg("b")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(len, 3);
+
+        let items: Vec<String> = conn.lrange("mylist", 0, -1).unwrap();
+        assert_eq!(items, vec!["a", "b", "c"]);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_rpoplpush() {
+    let port = 16414;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.rpush("src", "a").unwrap();
+        let _: () = conn.rpush("src", "b").unwrap();
+        let _: () = conn.rpush("src", "c").unwrap();
+
+        let val: String = redis::cmd("RPOPLPUSH")
+            .arg("src")
+            .arg("dst")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(val, "c");
+
+        let dst: Vec<String> = conn.lrange("dst", 0, -1).unwrap();
+        assert_eq!(dst, vec!["c"]);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_smembers() {
+    let port = 16415;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.sadd("myset", "a").unwrap();
+        let _: () = conn.sadd("myset", "b").unwrap();
+        let _: () = conn.sadd("myset", "c").unwrap();
+
+        let mut members: Vec<String> = conn.smembers("myset").unwrap();
+        members.sort();
+        assert_eq!(members, vec!["a", "b", "c"]);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_sunion_sinter_sdiff() {
+    let port = 16416;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.sadd("s1", "a").unwrap();
+        let _: () = conn.sadd("s1", "b").unwrap();
+        let _: () = conn.sadd("s1", "c").unwrap();
+        let _: () = conn.sadd("s2", "b").unwrap();
+        let _: () = conn.sadd("s2", "c").unwrap();
+        let _: () = conn.sadd("s2", "d").unwrap();
+
+        let mut union: Vec<String> = redis::cmd("SUNION")
+            .arg("s1")
+            .arg("s2")
+            .query(&mut conn)
+            .unwrap();
+        union.sort();
+        assert_eq!(union, vec!["a", "b", "c", "d"]);
+
+        let mut inter: Vec<String> = redis::cmd("SINTER")
+            .arg("s1")
+            .arg("s2")
+            .query(&mut conn)
+            .unwrap();
+        inter.sort();
+        assert_eq!(inter, vec!["b", "c"]);
+
+        let mut diff: Vec<String> = redis::cmd("SDIFF")
+            .arg("s1")
+            .arg("s2")
+            .query(&mut conn)
+            .unwrap();
+        diff.sort();
+        assert_eq!(diff, vec!["a"]);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_zadd_zrange_withscores() {
+    let port = 16417;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.zadd("zs", "alice", 1).unwrap();
+        let _: () = conn.zadd("zs", "bob", 2).unwrap();
+        let _: () = conn.zadd("zs", "charlie", 3).unwrap();
+
+        let range: Vec<String> = redis::cmd("ZRANGE")
+            .arg("zs")
+            .arg("0")
+            .arg("-1")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(range, vec!["alice", "bob", "charlie"]);
+
+        let range_ws: Vec<(String, f64)> = redis::cmd("ZRANGE")
+            .arg("zs")
+            .arg("0")
+            .arg("-1")
+            .arg("WITHSCORES")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(
+            range_ws,
+            vec![
+                ("alice".to_string(), 1.0),
+                ("bob".to_string(), 2.0),
+                ("charlie".to_string(), 3.0)
+            ]
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_zincrby() {
+    let port = 16418;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.zadd("zs", "member", 10).unwrap();
+
+        let new_score: f64 = redis::cmd("ZINCRBY")
+            .arg("zs")
+            .arg("5")
+            .arg("member")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(new_score, 15.0);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_hgetall_hmget() {
+    let port = 16419;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.hset("h", "f1", "v1").unwrap();
+        let _: () = conn.hset("h", "f2", "v2").unwrap();
+        let _: () = conn.hset("h", "f3", "v3").unwrap();
+
+        let vals: Vec<String> = redis::cmd("HMGET")
+            .arg("h")
+            .arg("f1")
+            .arg("f3")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(vals, vec!["v1", "v3"]);
+
+        let mut all: Vec<(String, String)> = conn.hgetall("h").unwrap();
+        all.sort();
+        assert_eq!(
+            all,
+            vec![
+                ("f1".to_string(), "v1".to_string()),
+                ("f2".to_string(), "v2".to_string()),
+                ("f3".to_string(), "v3".to_string()),
+            ]
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_incrbyfloat() {
+    let port = 16420;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.set("mykey", "10.5").unwrap();
+        let result: f64 = redis::cmd("INCRBYFLOAT")
+            .arg("mykey")
+            .arg("0.1")
+            .query(&mut conn)
+            .unwrap();
+        assert!((result - 10.6).abs() < 0.001);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_persist() {
+    let port = 16421;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.set("mykey", "myval").unwrap();
+        let _: () = conn.expire("mykey", 100).unwrap();
+        assert!(conn.ttl::<_, i64>("mykey").unwrap() > 0);
+
+        let removed: bool = conn.persist("mykey").unwrap();
+        assert!(removed);
+
+        let ttl: i64 = conn.ttl("mykey").unwrap();
+        assert_eq!(ttl, -1);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_multi_discard() {
+    let port = 16422;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // MULTI then DISCARD
+        let _: String = redis::cmd("MULTI").query(&mut conn).unwrap();
+        let queued: String = redis::cmd("SET")
+            .arg("key")
+            .arg("val")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(queued, "QUEUED");
+
+        let _: String = redis::cmd("DISCARD").query(&mut conn).unwrap();
+
+        // Key should not exist
+        let exists: bool = conn.exists("key").unwrap();
+        assert!(!exists);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_time_command() {
+    let port = 16423;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let result: Vec<String> = redis::cmd("TIME").query(&mut conn).unwrap();
+        assert_eq!(result.len(), 2);
+        let secs: u64 = result[0].parse().unwrap();
+        assert!(secs > 1_000_000_000); // After year 2001
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_unknown_command() {
+    let port = 16424;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let result: redis::RedisResult<String> = redis::cmd("FOOBAR").query(&mut conn);
+        assert!(result.is_err());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_concurrent_clients() {
+    let port = 16425;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut handles = vec![];
+    for i in 0..5 {
+        let handle = tokio::task::spawn_blocking(move || {
+            let mut conn = get_client(port);
+            let key = format!("concurrent_key_{i}");
+            let val = format!("value_{i}");
+            let _: () = redis::cmd("SET")
+                .arg(&key)
+                .arg(&val)
+                .query(&mut conn)
+                .unwrap();
+            let result: String = redis::cmd("GET").arg(&key).query(&mut conn).unwrap();
+            assert_eq!(result, val);
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_scan() {
+    let port = 16426;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        for i in 0..10 {
+            let _: () = conn.set(format!("scankey:{i}"), format!("val{i}")).unwrap();
+        }
+
+        // SCAN with MATCH
+        let (cursor, keys): (String, Vec<String>) = redis::cmd("SCAN")
+            .arg("0")
+            .arg("MATCH")
+            .arg("scankey:*")
+            .arg("COUNT")
+            .arg("100")
+            .query(&mut conn)
+            .unwrap();
+
+        // cursor should be 0 (we scanned everything)
+        // OR we got partial results; either way keys should not be empty
+        if cursor == "0" {
+            assert_eq!(keys.len(), 10);
+        } else {
+            assert!(!keys.is_empty());
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_msetnx() {
+    let port = 16427;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // MSETNX succeeds when no keys exist
+        let result: bool = redis::cmd("MSETNX")
+            .arg("k1")
+            .arg("v1")
+            .arg("k2")
+            .arg("v2")
+            .query(&mut conn)
+            .unwrap();
+        assert!(result);
+
+        // MSETNX fails when any key exists
+        let result: bool = redis::cmd("MSETNX")
+            .arg("k2")
+            .arg("v2new")
+            .arg("k3")
+            .arg("v3")
+            .query(&mut conn)
+            .unwrap();
+        assert!(!result);
+
+        // k3 should not exist (since MSETNX was atomic and failed)
+        let exists: bool = conn.exists("k3").unwrap();
+        assert!(!exists);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_hincrby() {
+    let port = 16428;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.hset("myhash", "counter", "10").unwrap();
+        let new_val: i64 = conn.hincr("myhash", "counter", 5).unwrap();
+        assert_eq!(new_val, 15);
+
+        let new_val: i64 = conn.hincr("myhash", "counter", -3).unwrap();
+        assert_eq!(new_val, 12);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_getdel() {
+    let port = 16429;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = conn.set("mykey", "myval").unwrap();
+        let val: String = redis::cmd("GETDEL").arg("mykey").query(&mut conn).unwrap();
+        assert_eq!(val, "myval");
+
+        let exists: bool = conn.exists("mykey").unwrap();
+        assert!(!exists);
     })
     .await
     .unwrap();

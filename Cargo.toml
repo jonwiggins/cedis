@@ -22,3 +22,7 @@ path = "src/main.rs"
 [[bin]]
 name = "cedis-cli"
 path = "src/bin/cedis-cli.rs"
+
+[[bench]]
+name = "throughput"
+harness = false

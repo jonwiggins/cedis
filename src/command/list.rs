@@ -567,6 +567,195 @@ pub async fn cmd_lmove(
     RespValue::bulk_string(value)
 }
 
+pub async fn cmd_lmpop(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    // LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]
+    if args.len() < 3 {
+        return wrong_arg_count("lmpop");
+    }
+    let numkeys = match arg_to_i64(&args[0]) {
+        Some(n) if n > 0 => n as usize,
+        _ => return RespValue::error("ERR numkeys must be positive"),
+    };
+    if args.len() < 1 + numkeys + 1 {
+        return wrong_arg_count("lmpop");
+    }
+
+    let keys: Vec<String> = args[1..1 + numkeys]
+        .iter()
+        .filter_map(arg_to_string)
+        .collect();
+
+    let direction_idx = 1 + numkeys;
+    let direction = match arg_to_string(&args[direction_idx]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR syntax error"),
+    };
+    if direction != "LEFT" && direction != "RIGHT" {
+        return RespValue::error("ERR syntax error");
+    }
+
+    let mut count = 1usize;
+    let mut i = direction_idx + 1;
+    while i < args.len() {
+        if let Some(opt) = arg_to_string(&args[i]) {
+            if opt.to_uppercase() == "COUNT" && i + 1 < args.len() {
+                count = arg_to_i64(&args[i + 1]).unwrap_or(1).max(1) as usize;
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    for key in &keys {
+        let list_len = match db.get(key) {
+            Some(entry) => match &entry.value {
+                RedisValue::List(list) => list.len(),
+                _ => continue,
+            },
+            None => continue,
+        };
+        if list_len == 0 {
+            continue;
+        }
+
+        let entry = db.get_mut(key).unwrap();
+        let list = match &mut entry.value {
+            RedisValue::List(l) => l,
+            _ => continue,
+        };
+
+        let mut results = Vec::new();
+        for _ in 0..count {
+            let val = if direction == "LEFT" {
+                list.lpop()
+            } else {
+                list.rpop()
+            };
+            match val {
+                Some(v) => results.push(RespValue::bulk_string(v)),
+                None => break,
+            }
+        }
+
+        if !results.is_empty() {
+            // Check if list became empty and clean up
+            let should_del = list.is_empty();
+            let key_clone = key.clone();
+            if should_del {
+                db.del(&key_clone);
+            }
+
+            return RespValue::array(vec![
+                RespValue::bulk_string(key_clone.into_bytes()),
+                RespValue::array(results),
+            ]);
+        }
+    }
+
+    RespValue::null_array()
+}
+
+pub async fn cmd_blpop(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    // BLPOP key [key ...] timeout
+    // Non-blocking implementation: try to pop immediately, return nil if empty
+    if args.len() < 2 {
+        return wrong_arg_count("blpop");
+    }
+
+    let keys: Vec<String> = args[..args.len() - 1]
+        .iter()
+        .filter_map(arg_to_string)
+        .collect();
+
+    // timeout is the last arg (we don't actually block)
+    let _timeout = arg_to_i64(&args[args.len() - 1]).unwrap_or(0);
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    for key in &keys {
+        match db.get_mut(key) {
+            Some(entry) => match &mut entry.value {
+                RedisValue::List(list) if !list.is_empty() => {
+                    let val = list.lpop().unwrap();
+                    let should_del = list.is_empty();
+                    let key_clone = key.clone();
+                    let key_resp = RespValue::bulk_string(key_clone.as_bytes().to_vec());
+                    let val_resp = RespValue::bulk_string(val);
+
+                    if should_del {
+                        db.del(&key_clone);
+                    }
+
+                    return RespValue::array(vec![key_resp, val_resp]);
+                }
+                _ => continue,
+            },
+            None => continue,
+        }
+    }
+
+    // In a full implementation, we would block here until data is available.
+    // For now, return null array (timeout immediately).
+    RespValue::null_array()
+}
+
+pub async fn cmd_brpop(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    // BRPOP key [key ...] timeout
+    if args.len() < 2 {
+        return wrong_arg_count("brpop");
+    }
+
+    let keys: Vec<String> = args[..args.len() - 1]
+        .iter()
+        .filter_map(arg_to_string)
+        .collect();
+
+    let _timeout = arg_to_i64(&args[args.len() - 1]).unwrap_or(0);
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    for key in &keys {
+        match db.get_mut(key) {
+            Some(entry) => match &mut entry.value {
+                RedisValue::List(list) if !list.is_empty() => {
+                    let val = list.rpop().unwrap();
+                    let should_del = list.is_empty();
+                    let key_clone = key.clone();
+                    let key_resp = RespValue::bulk_string(key_clone.as_bytes().to_vec());
+                    let val_resp = RespValue::bulk_string(val);
+
+                    if should_del {
+                        db.del(&key_clone);
+                    }
+
+                    return RespValue::array(vec![key_resp, val_resp]);
+                }
+                _ => continue,
+            },
+            None => continue,
+        }
+    }
+
+    RespValue::null_array()
+}
+
 pub async fn cmd_lpos(
     args: &[RespValue],
     store: &SharedStore,

@@ -17,6 +17,9 @@ pub struct ClientState {
     pub multi_queue: Vec<(String, Vec<RespValue>)>,
     pub watched_keys: Vec<String>,
     pub watch_dirty: bool,
+
+    // Pub/Sub state — number of active subscriptions (channels + patterns)
+    pub subscriptions: usize,
 }
 
 impl ClientState {
@@ -31,6 +34,12 @@ impl ClientState {
             multi_queue: Vec::new(),
             watched_keys: Vec::new(),
             watch_dirty: false,
+            subscriptions: 0,
         }
+    }
+
+    /// Whether this client is in subscribe mode (can only run subscribe commands).
+    pub fn in_subscribe_mode(&self) -> bool {
+        self.subscriptions > 0
     }
 }
