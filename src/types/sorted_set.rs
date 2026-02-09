@@ -202,6 +202,11 @@ impl RedisSortedSet {
         self.scores.contains_key(member)
     }
 
+    /// Check if any member exceeds the given byte length.
+    pub fn has_long_entry(&self, max_bytes: usize) -> bool {
+        self.scores.keys().any(|m| m.len() > max_bytes)
+    }
+
     /// Iterator over all (member, score) pairs in score order.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], f64)> {
         self.tree

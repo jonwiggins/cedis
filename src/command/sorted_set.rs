@@ -56,6 +56,17 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
         }
     }
 
+    // Validate flag combinations
+    if nx && xx {
+        return RespValue::error("ERR XX and NX options at the same time are not compatible");
+    }
+    if nx && (gt || lt) {
+        return RespValue::error("ERR GT, LT, and NX options at the same time are not compatible");
+    }
+    if gt && lt {
+        return RespValue::error("ERR GT and LT options at the same time are not compatible");
+    }
+
     // Remaining args are score-member pairs
     let pairs = &args[i..];
     if pairs.is_empty() || pairs.len() % 2 != 0 {

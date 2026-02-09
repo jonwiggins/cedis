@@ -110,6 +110,11 @@ impl RedisSet {
         self.data
     }
 
+    /// Check if any member exceeds the given byte length.
+    pub fn has_long_entry(&self, max_bytes: usize) -> bool {
+        self.data.iter().any(|m| m.len() > max_bytes)
+    }
+
     /// Check if all members are integers (for intset encoding detection).
     pub fn is_all_integers(&self) -> bool {
         self.data.iter().all(|member| {

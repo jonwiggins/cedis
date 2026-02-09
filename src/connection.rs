@@ -15,8 +15,10 @@ pub struct ClientState {
     // Transaction state
     pub in_multi: bool,
     pub multi_queue: Vec<(String, Vec<RespValue>)>,
-    pub watched_keys: Vec<String>,
+    /// (db_index, key, version_at_watch_time, global_version_at_watch_time)
+    pub watched_keys: Vec<(usize, String, u64, u64)>,
     pub watch_dirty: bool,
+    pub multi_error: bool,
 
     // Pub/Sub state — number of active subscriptions (channels + patterns)
     pub subscriptions: usize,
@@ -34,6 +36,7 @@ impl ClientState {
             multi_queue: Vec::new(),
             watched_keys: Vec::new(),
             watch_dirty: false,
+            multi_error: false,
             subscriptions: 0,
         }
     }

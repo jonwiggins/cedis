@@ -5,6 +5,11 @@ pub fn glob_match(pattern: &str, string: &str) -> bool {
 }
 
 fn glob_match_bytes(pattern: &[u8], string: &[u8]) -> bool {
+    // Match Redis's recursion depth limit of 1000 for star wildcards.
+    // Patterns with more than 1000 '*' chars are rejected to prevent DoS.
+    if pattern.iter().filter(|&&b| b == b'*').count() > 1000 {
+        return false;
+    }
     let mut pi = 0;
     let mut si = 0;
     let mut star_pi = usize::MAX;

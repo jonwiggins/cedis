@@ -61,10 +61,18 @@ impl Bitmap {
             return 0;
         }
 
-        let start = normalize_index(start, len);
-        let end = normalize_index(end, len);
+        // Normalize negative indices without clamping to detect start > end
+        let start_norm = if start < 0 { len + start } else { start };
+        let end_norm = if end < 0 { len + end } else { end };
 
-        if start > end || start >= len as usize {
+        if start_norm > end_norm {
+            return 0;
+        }
+
+        let start = start_norm.max(0) as usize;
+        let end = end_norm.max(0) as usize;
+
+        if start >= len as usize {
             return 0;
         }
 
@@ -74,6 +82,41 @@ impl Bitmap {
             .iter()
             .map(|b| b.count_ones() as usize)
             .sum()
+    }
+
+    /// Count set bits in a bit range [start, end] (inclusive).
+    /// start and end are bit offsets. Negative indices count from the end.
+    pub fn bitcount_bit_range(&self, start: i64, end: i64) -> usize {
+        let total_bits = (self.data.len() * 8) as i64;
+        if total_bits == 0 {
+            return 0;
+        }
+
+        // Normalize without clamping to detect start > end
+        let start_norm = if start < 0 { total_bits + start } else { start };
+        let end_norm = if end < 0 { total_bits + end } else { end };
+
+        if start_norm > end_norm {
+            return 0;
+        }
+
+        let start = start_norm.max(0) as usize;
+        let end = end_norm.max(0) as usize;
+
+        if start >= total_bits as usize {
+            return 0;
+        }
+        let end = end.min(total_bits as usize - 1);
+
+        let mut count = 0;
+        for bit in start..=end {
+            let byte_idx = bit / 8;
+            let bit_idx = 7 - (bit % 8); // Redis uses MSB-first bit ordering
+            if byte_idx < self.data.len() && (self.data[byte_idx] >> bit_idx) & 1 == 1 {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Bitwise AND of two bitmaps.
@@ -118,6 +161,101 @@ impl Bitmap {
         Bitmap { data: result }
     }
 
+    /// DIFF: bits set in first bitmap but not in the union of the rest.
+    /// result = first & ~(OR of rest)
+    pub fn bitop_diff(bitmaps: &[Bitmap]) -> Bitmap {
+        if bitmaps.is_empty() {
+            return Bitmap::new();
+        }
+        let first = &bitmaps[0];
+        if bitmaps.len() == 1 {
+            return first.clone();
+        }
+        // Compute OR of bitmaps[1..]
+        let mut union = bitmaps[1].clone();
+        for bm in &bitmaps[2..] {
+            union = union.bitop_or(bm);
+        }
+        // result = first AND NOT union
+        let len = first.data.len().max(union.data.len());
+        let mut result = vec![0u8; len];
+        for i in 0..len {
+            let a = if i < first.data.len() { first.data[i] } else { 0 };
+            let b = if i < union.data.len() { union.data[i] } else { 0 };
+            result[i] = a & !b;
+        }
+        Bitmap { data: result }
+    }
+
+    /// DIFF1: bits NOT set in first bitmap but set in the union of the rest.
+    /// result = ~first & (OR of rest)
+    pub fn bitop_diff1(bitmaps: &[Bitmap]) -> Bitmap {
+        if bitmaps.is_empty() {
+            return Bitmap::new();
+        }
+        let first = &bitmaps[0];
+        if bitmaps.len() == 1 {
+            return first.clone();
+        }
+        let mut union = bitmaps[1].clone();
+        for bm in &bitmaps[2..] {
+            union = union.bitop_or(bm);
+        }
+        let len = first.data.len().max(union.data.len());
+        let mut result = vec![0u8; len];
+        for i in 0..len {
+            let a = if i < first.data.len() { first.data[i] } else { 0 };
+            let b = if i < union.data.len() { union.data[i] } else { 0 };
+            result[i] = !a & b;
+        }
+        Bitmap { data: result }
+    }
+
+    /// ANDOR: bits set in first bitmap AND in the union of the rest.
+    /// result = first & (OR of rest)
+    pub fn bitop_andor(bitmaps: &[Bitmap]) -> Bitmap {
+        if bitmaps.is_empty() {
+            return Bitmap::new();
+        }
+        let first = &bitmaps[0];
+        if bitmaps.len() == 1 {
+            return first.clone();
+        }
+        let mut union = bitmaps[1].clone();
+        for bm in &bitmaps[2..] {
+            union = union.bitop_or(bm);
+        }
+        let len = first.data.len().max(union.data.len());
+        let mut result = vec![0u8; len];
+        for i in 0..len {
+            let a = if i < first.data.len() { first.data[i] } else { 0 };
+            let b = if i < union.data.len() { union.data[i] } else { 0 };
+            result[i] = a & b;
+        }
+        Bitmap { data: result }
+    }
+
+    /// ONE: bits set in exactly one of the input bitmaps.
+    pub fn bitop_one(bitmaps: &[Bitmap]) -> Bitmap {
+        if bitmaps.is_empty() {
+            return Bitmap::new();
+        }
+        let len = bitmaps.iter().map(|b| b.data.len()).max().unwrap_or(0);
+        let mut result = vec![0u8; len];
+        for i in 0..len {
+            // Track bits that appear exactly once
+            let mut seen_once = 0u8;
+            let mut seen_multi = 0u8;
+            for bm in bitmaps {
+                let b = if i < bm.data.len() { bm.data[i] } else { 0 };
+                seen_multi |= seen_once & b;
+                seen_once ^= b;
+            }
+            result[i] = seen_once & !seen_multi;
+        }
+        Bitmap { data: result }
+    }
+
     /// Find the position of the first bit set to `bit` (true=1, false=0).
     /// Optionally restrict the search to a byte range [start, end].
     /// Returns -1 if the bit is not found.
@@ -143,7 +281,7 @@ impl Bitmap {
         };
 
         if start_byte > end_byte || start_byte >= self.data.len() {
-            return if bit { -1 } else { -1 };
+            return -1;
         }
 
         // Search through the specified byte range
@@ -163,6 +301,44 @@ impl Bitmap {
         // - If end was specified, return -1
         if !bit && !end_specified {
             return (end_byte as i64 + 1) * 8;
+        }
+
+        -1
+    }
+
+    /// Find the position of the first bit set to `bit` using BIT offsets.
+    /// start and end are bit offsets, not byte offsets. Negative indices count from end.
+    pub fn bitpos_bit(&self, bit: bool, start: i64, end: i64) -> i64 {
+        let total_bits = (self.data.len() * 8) as i64;
+        if total_bits == 0 {
+            return if bit { -1 } else { 0 };
+        }
+
+        let start = if start < 0 {
+            (total_bits + start).max(0) as usize
+        } else {
+            start as usize
+        };
+        let end = if end < 0 {
+            (total_bits + end).max(0) as usize
+        } else {
+            end as usize
+        };
+
+        if start > end || start >= total_bits as usize {
+            return -1;
+        }
+        let end = end.min(total_bits as usize - 1);
+
+        for bit_offset in start..=end {
+            let byte_idx = bit_offset / 8;
+            let bit_idx = 7 - (bit_offset % 8);
+            if byte_idx < self.data.len() {
+                let b = (self.data[byte_idx] >> bit_idx) & 1 == 1;
+                if b == bit {
+                    return bit_offset as i64;
+                }
+            }
         }
 
         -1

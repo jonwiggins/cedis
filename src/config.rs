@@ -20,6 +20,14 @@ pub struct Config {
     // Memory
     pub maxmemory: u64,
     pub maxmemory_policy: String,
+    // Encoding thresholds
+    pub list_max_listpack_size: i64,
+    pub hash_max_listpack_entries: u64,
+    pub hash_max_listpack_value: u64,
+    pub set_max_intset_entries: u64,
+    pub set_max_listpack_entries: u64,
+    pub zset_max_listpack_entries: u64,
+    pub zset_max_listpack_value: u64,
 }
 
 impl Default for Config {
@@ -40,6 +48,13 @@ impl Default for Config {
             save_rules: vec![(900, 1), (300, 10), (60, 10000)],
             maxmemory: 0,
             maxmemory_policy: "noeviction".to_string(),
+            list_max_listpack_size: -2,
+            hash_max_listpack_entries: 128,
+            hash_max_listpack_value: 64,
+            set_max_intset_entries: 512,
+            set_max_listpack_entries: 128,
+            zset_max_listpack_entries: 128,
+            zset_max_listpack_value: 64,
         }
     }
 }
@@ -141,6 +156,13 @@ impl Config {
             "appendfsync" => Some(self.appendfsync.clone()),
             "maxmemory" => Some(self.maxmemory.to_string()),
             "maxmemory-policy" => Some(self.maxmemory_policy.clone()),
+            "list-max-ziplist-size" | "list-max-listpack-size" => Some(self.list_max_listpack_size.to_string()),
+            "hash-max-ziplist-entries" | "hash-max-listpack-entries" => Some(self.hash_max_listpack_entries.to_string()),
+            "hash-max-ziplist-value" | "hash-max-listpack-value" => Some(self.hash_max_listpack_value.to_string()),
+            "set-max-intset-entries" => Some(self.set_max_intset_entries.to_string()),
+            "set-max-listpack-entries" => Some(self.set_max_listpack_entries.to_string()),
+            "zset-max-ziplist-entries" | "zset-max-listpack-entries" => Some(self.zset_max_listpack_entries.to_string()),
+            "zset-max-ziplist-value" | "zset-max-listpack-value" => Some(self.zset_max_listpack_value.to_string()),
             "save" => {
                 let s: Vec<String> = self
                     .save_rules
@@ -195,6 +217,34 @@ impl Config {
                 } else {
                     Some(value.to_string())
                 };
+                Ok(())
+            }
+            "list-max-ziplist-size" | "list-max-listpack-size" => {
+                self.list_max_listpack_size = value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "hash-max-ziplist-entries" | "hash-max-listpack-entries" => {
+                self.hash_max_listpack_entries = value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "hash-max-ziplist-value" | "hash-max-listpack-value" => {
+                self.hash_max_listpack_value = value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "set-max-intset-entries" => {
+                self.set_max_intset_entries = value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "set-max-listpack-entries" => {
+                self.set_max_listpack_entries = value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "zset-max-ziplist-entries" | "zset-max-listpack-entries" => {
+                self.zset_max_listpack_entries = value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "zset-max-ziplist-value" | "zset-max-listpack-value" => {
+                self.zset_max_listpack_value = value.parse().map_err(|_| "Invalid value".to_string())?;
                 Ok(())
             }
             _ => {

@@ -13,6 +13,7 @@ pub fn cmd_multi(client: &mut ClientState) -> RespValue {
     }
     client.in_multi = true;
     client.multi_queue.clear();
+    client.multi_error = false;
     RespValue::ok()
 }
 
@@ -32,7 +33,39 @@ pub fn cmd_exec<'a>(
 
         client.in_multi = false;
 
-        // Check WATCH: if any watched key was modified, abort
+        // Check EXECABORT: if any queued command had an arity error
+        if client.multi_error {
+            client.multi_queue.clear();
+            client.watched_keys.clear();
+            client.watch_dirty = false;
+            client.multi_error = false;
+            return RespValue::error("EXECABORT Transaction discarded because of previous errors.");
+        }
+
+        // Check WATCH: compare key versions
+        if !client.watched_keys.is_empty() {
+            let store_guard = store.read().await;
+            for (db_index, key, saved_version, saved_global) in &client.watched_keys {
+                let db = &store_guard.databases[*db_index];
+                let current_version = db.key_version(key);
+                let current_global = db.global_version();
+                // Key was modified if its version changed, or if touch_all was called
+                if current_version != *saved_version || (*saved_global > 0 && current_global != *saved_global && current_version == 0) {
+                    drop(store_guard);
+                    client.multi_queue.clear();
+                    client.watched_keys.clear();
+                    client.watch_dirty = false;
+                    return RespValue::null_array();
+                }
+                // Also check if global version advanced past saved (flush happened)
+                if current_global > *saved_global && *saved_version == 0 && current_version == 0 {
+                    // Key didn't exist at watch time and still doesn't, but flush happened
+                    // This is fine - no modification
+                }
+            }
+            drop(store_guard);
+        }
+
         if client.watch_dirty {
             client.multi_queue.clear();
             client.watched_keys.clear();
@@ -61,12 +94,13 @@ pub fn cmd_discard(client: &mut ClientState) -> RespValue {
     }
     client.in_multi = false;
     client.multi_queue.clear();
+    client.multi_error = false;
     RespValue::ok()
 }
 
 pub async fn cmd_watch(
     args: &[RespValue],
-    _store: &SharedStore,
+    store: &SharedStore,
     client: &mut ClientState,
 ) -> RespValue {
     if args.is_empty() {
@@ -76,9 +110,14 @@ pub async fn cmd_watch(
         return RespValue::error("ERR WATCH inside MULTI is not allowed");
     }
 
+    let store_guard = store.read().await;
+    let db = &store_guard.databases[client.db_index];
+    let global_ver = db.global_version();
+
     for arg in args {
         if let Some(key) = crate::command::arg_to_string(arg) {
-            client.watched_keys.push(key);
+            let ver = db.key_version(&key);
+            client.watched_keys.push((client.db_index, key, ver, global_ver));
         }
     }
 

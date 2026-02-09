@@ -127,6 +127,14 @@ async fn handle_connection(
         // Try to parse any complete commands in the buffer first
         loop {
             match RespParser::parse(&mut buf) {
+                Ok(Some(RespValue::Array(None))) => {
+                    // Silently ignore null arrays (e.g. *-10)
+                    continue;
+                }
+                Ok(Some(RespValue::Array(Some(ref items)))) if items.is_empty() => {
+                    // Silently ignore empty arrays (e.g. *0)
+                    continue;
+                }
                 Ok(Some(value)) => {
                     let response = process_command(
                         value,
@@ -187,7 +195,22 @@ async fn handle_connection(
                         cleanup_client(&pubsub, &client).await;
                         return Ok(());
                     }
-                    Ok(_) => {} // Got data, loop back to parse
+                    Ok(_) => {
+                        // Protect against protocol desync / too big inline request.
+                        // Check if the first CRLF-delimited line is within reasonable bounds.
+                        if buf.len() > 64 * 1024 {
+                            // Check if we have a CRLF in the first 64KB
+                            let has_early_crlf = buf[..std::cmp::min(buf.len(), 64 * 1024)]
+                                .windows(2)
+                                .any(|w| w == b"\r\n");
+                            if !has_early_crlf {
+                                let err_resp = RespValue::error("ERR Protocol error: too big inline request");
+                                stream.write_all(&err_resp.serialize()).await?;
+                                cleanup_client(&pubsub, &client).await;
+                                return Ok(());
+                            }
+                        }
+                    }
                     Err(e) => {
                         cleanup_client(&pubsub, &client).await;
                         return Err(e);
@@ -264,8 +287,22 @@ async fn process_command(
         }
     }
 
+    // In subscribe mode, PING returns pub/sub-style array
+    if client.in_subscribe_mode() && cmd_name == "PING" {
+        let msg = if !args.is_empty() {
+            args[0].to_string_lossy().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        return RespValue::array(vec![
+            RespValue::bulk_string(b"pong".to_vec()),
+            RespValue::bulk_string(msg.into_bytes()),
+        ]);
+    }
+
     // Log write commands to AOF before executing
-    if is_write_command(&cmd_name) {
+    let is_write = is_write_command(&cmd_name);
+    if is_write {
         let mut aof = aof.lock().await;
         if aof.is_active() {
             let _ = aof.log_command(&cmd_name, args);
@@ -273,7 +310,47 @@ async fn process_command(
         change_counter.fetch_add(1, Ordering::Relaxed);
     }
 
-    command::dispatch(&cmd_name, args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await
+    let response = command::dispatch(&cmd_name, args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await;
+
+    // Touch modified keys for WATCH support
+    if is_write {
+        let mut store_guard = store.write().await;
+        let db = store_guard.db(client.db_index);
+        match cmd_name.as_str() {
+            "FLUSHDB" | "FLUSHALL" | "SWAPDB" => {
+                db.touch_all();
+            }
+            "RENAME" | "RENAMENX" => {
+                if let Some(k) = args.first().and_then(|a| a.to_string_lossy()) {
+                    db.touch(&k);
+                }
+                if let Some(k) = args.get(1).and_then(|a| a.to_string_lossy()) {
+                    db.touch(&k);
+                }
+            }
+            "DEL" | "UNLINK" => {
+                for a in args {
+                    if let Some(k) = a.to_string_lossy() {
+                        db.touch(&k);
+                    }
+                }
+            }
+            "MSET" | "MSETNX" => {
+                for i in (0..args.len()).step_by(2) {
+                    if let Some(k) = args[i].to_string_lossy() {
+                        db.touch(&k);
+                    }
+                }
+            }
+            _ => {
+                if let Some(k) = args.first().and_then(|a| a.to_string_lossy()) {
+                    db.touch(&k);
+                }
+            }
+        }
+    }
+
+    response
 }
 
 async fn cleanup_client(pubsub: &SharedPubSub, client: &ClientState) {

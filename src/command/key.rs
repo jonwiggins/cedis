@@ -1,4 +1,5 @@
 use crate::command::{arg_to_i64, arg_to_string, wrong_arg_count};
+use crate::config::SharedConfig;
 use crate::connection::ClientState;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
@@ -446,6 +447,7 @@ pub async fn cmd_randomkey(store: &SharedStore, client: &ClientState) -> RespVal
 pub async fn cmd_object(
     args: &[RespValue],
     store: &SharedStore,
+    config: &SharedConfig,
     client: &ClientState,
 ) -> RespValue {
     if args.is_empty() {
@@ -467,6 +469,7 @@ pub async fn cmd_object(
                 None => return RespValue::null_bulk_string(),
             };
 
+            let cfg = config.read().await;
             let mut store = store.write().await;
             let db = store.db(client.db_index);
 
@@ -483,22 +486,63 @@ pub async fn cmd_object(
                             }
                         }
                         crate::types::RedisValue::List(l) => {
-                            if l.len() <= 128 { "listpack" } else { "quicklist" }
+                            if cfg.list_max_listpack_size > 0 {
+                                // Positive: max number of entries per listpack node
+                                if l.len() <= cfg.list_max_listpack_size as usize {
+                                    "listpack"
+                                } else {
+                                    "quicklist"
+                                }
+                            } else {
+                                // Negative: byte-size limit per node
+                                // -1=4KB, -2=8KB, -3=16KB, -4=32KB, -5=64KB
+                                let max_bytes = match cfg.list_max_listpack_size {
+                                    -1 => 4096,
+                                    -2 => 8192,
+                                    -3 => 16384,
+                                    -4 => 32768,
+                                    -5 => 65536,
+                                    _ => 8192, // default to 8KB
+                                };
+                                // Estimate serialized size: ~(11 + avg_entry_size) per entry
+                                let est_size: usize = l.iter()
+                                    .map(|e| e.len() + 11)
+                                    .sum();
+                                if est_size <= max_bytes {
+                                    "listpack"
+                                } else {
+                                    "quicklist"
+                                }
+                            }
                         }
                         crate::types::RedisValue::Hash(h) => {
-                            if h.len() <= 128 { "listpack" } else { "hashtable" }
+                            let max_entries = cfg.hash_max_listpack_entries as usize;
+                            let max_value = cfg.hash_max_listpack_value as usize;
+                            if h.len() <= max_entries && !h.has_long_entry(max_value) {
+                                "listpack"
+                            } else {
+                                "hashtable"
+                            }
                         }
                         crate::types::RedisValue::Set(s) => {
-                            if s.is_all_integers() && s.len() <= 512 {
+                            let max_intset = cfg.set_max_intset_entries as usize;
+                            let max_listpack = cfg.set_max_listpack_entries as usize;
+                            if s.is_all_integers() && s.len() <= max_intset {
                                 "intset"
-                            } else if s.len() <= 128 {
+                            } else if s.len() <= max_listpack && !s.has_long_entry(64) {
                                 "listpack"
                             } else {
                                 "hashtable"
                             }
                         }
                         crate::types::RedisValue::SortedSet(z) => {
-                            if z.len() <= 128 { "listpack" } else { "skiplist" }
+                            let max_entries = cfg.zset_max_listpack_entries as usize;
+                            let max_value = cfg.zset_max_listpack_value as usize;
+                            if z.len() <= max_entries && !z.has_long_entry(max_value) {
+                                "listpack"
+                            } else {
+                                "skiplist"
+                            }
                         }
                         crate::types::RedisValue::Stream(_) => "stream",
                         crate::types::RedisValue::HyperLogLog(_) => "raw",
@@ -754,7 +798,7 @@ pub async fn cmd_copy(
 
     // Validate destination db index
     if dest_db_index >= store.databases.len() {
-        return RespValue::error("ERR invalid DB index");
+        return RespValue::error("ERR DB index is out of range");
     }
 
     // Read the source entry from the source db
@@ -778,5 +822,53 @@ pub async fn cmd_copy(
     }
 
     dst_db.set(destination, source_entry);
+    RespValue::integer(1)
+}
+
+pub async fn cmd_move(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    // MOVE key db
+    if args.len() != 2 {
+        return wrong_arg_count("move");
+    }
+
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::integer(0),
+    };
+    let dest_db_index = match arg_to_i64(&args[1]) {
+        Some(n) if n >= 0 => n as usize,
+        _ => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+
+    if dest_db_index == client.db_index {
+        return RespValue::error("ERR source and destination objects are the same");
+    }
+
+    let mut store = store.write().await;
+
+    if dest_db_index >= store.databases.len() {
+        return RespValue::error("ERR index out of range");
+    }
+
+    let src_db = &mut store.databases[client.db_index];
+    let source_entry = match src_db.get(&key) {
+        Some(entry) => Entry {
+            value: entry.value.clone(),
+            expires_at: entry.expires_at,
+        },
+        None => return RespValue::integer(0),
+    };
+
+    let dst_db = &mut store.databases[dest_db_index];
+    if dst_db.exists(&key) {
+        return RespValue::integer(0);
+    }
+
+    dst_db.set(key.clone(), source_entry);
+    store.databases[client.db_index].del(&key);
     RespValue::integer(1)
 }

@@ -172,9 +172,11 @@ impl RespParser {
         buf.advance(crlf + 2); // consume line + \r\n
 
         // Split by whitespace, treating quoted strings as single tokens
-        let parts = split_inline_command(&line_str);
+        let parts = split_inline_command(&line_str)?;
         if parts.is_empty() {
-            return Ok(None);
+            // Empty line (e.g. bare \r\n) — return empty array so the caller
+            // silently ignores it and continues parsing instead of blocking.
+            return Ok(Some(RespValue::Array(Some(Vec::new()))));
         }
 
         let items: Vec<RespValue> = parts
@@ -226,10 +228,10 @@ impl RespParser {
         };
 
         let len_str = std::str::from_utf8(&buf[1..crlf])
-            .map_err(|_| RespError::InvalidData("Invalid bulk string length encoding".into()))?;
+            .map_err(|_| RespError::InvalidData("invalid bulk length".into()))?;
         let len: i64 = len_str
             .parse()
-            .map_err(|_| RespError::InvalidData(format!("Invalid bulk string length: {len_str}")))?;
+            .map_err(|_| RespError::InvalidData("invalid bulk length".into()))?;
 
         if len == -1 {
             buf.advance(crlf + 2);
@@ -237,11 +239,13 @@ impl RespParser {
         }
 
         if len < -1 {
-            // Negative length other than -1: treat as null
-            buf.advance(crlf + 2);
-            return Ok(Some(RespValue::BulkString(None)));
+            return Err(RespError::InvalidData("invalid bulk length".into()));
         }
 
+        if len > 512 * 1024 * 1024 {
+            // 512MB max bulk string length
+            return Err(RespError::InvalidData("invalid bulk length".into()));
+        }
         let len = len as usize;
         let total_needed = crlf + 2 + len + 2; // header + data + trailing \r\n
 
@@ -272,7 +276,7 @@ impl RespParser {
             .map_err(|_| RespError::InvalidData("Invalid array length encoding".into()))?;
         let len: i64 = len_str
             .parse()
-            .map_err(|_| RespError::InvalidData(format!("Invalid array length: {len_str}")))?;
+            .map_err(|_| RespError::InvalidData("invalid multibulk length".into()))?;
 
         if len == -1 {
             buf.advance(crlf + 2);
@@ -283,6 +287,10 @@ impl RespParser {
             // Negative multibulk length other than -1: treat as null array
             buf.advance(crlf + 2);
             return Ok(Some(RespValue::Array(None)));
+        }
+
+        if len > 1024 * 1024 {
+            return Err(RespError::InvalidData("invalid multibulk length".into()));
         }
 
         let len = len as usize;
@@ -328,7 +336,7 @@ fn find_crlf_from(buf: &[u8], start: usize) -> Option<usize> {
 }
 
 /// Split an inline command into tokens, respecting double-quoted strings.
-fn split_inline_command(line: &str) -> Vec<String> {
+fn split_inline_command(line: &str) -> Result<Vec<String>, RespError> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
@@ -382,16 +390,20 @@ fn split_inline_command(line: &str) -> Vec<String> {
         }
     }
 
+    if in_quotes {
+        return Err(RespError::InvalidData("unbalanced quotes in request".into()));
+    }
+
     if !current.is_empty() {
         tokens.push(current);
     }
 
-    tokens
+    Ok(tokens)
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RespError {
-    #[error("Invalid RESP type byte: 0x{0:02x}")]
+    #[error("expected '$', got '{}'", *.0 as char)]
     InvalidByte(u8),
 
     #[error("Invalid data: {0}")]
@@ -587,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_split_inline_quoted() {
-        let parts = split_inline_command(r#"SET key "hello world""#);
+        let parts = split_inline_command(r#"SET key "hello world""#).unwrap();
         assert_eq!(parts, vec!["SET", "key", "hello world"]);
     }
 }

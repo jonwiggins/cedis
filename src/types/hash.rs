@@ -99,4 +99,9 @@ impl RedisHash {
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Vec<u8>)> {
         self.data.iter()
     }
+
+    /// Check if any field name or value exceeds the given byte length.
+    pub fn has_long_entry(&self, max_bytes: usize) -> bool {
+        self.data.iter().any(|(k, v)| k.len() > max_bytes || v.len() > max_bytes)
+    }
 }

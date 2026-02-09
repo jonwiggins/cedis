@@ -408,8 +408,12 @@ pub async fn cmd_decrby(
         Some(n) => n,
         None => return RespValue::error("ERR value is not an integer or out of range"),
     };
+    let neg_delta = match delta.checked_neg() {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
     let key_args = [args[0].clone()];
-    incr_decr(&key_args, store, client, -delta).await
+    incr_decr(&key_args, store, client, neg_delta).await
 }
 
 pub async fn cmd_incrbyfloat(
@@ -717,4 +721,266 @@ pub async fn cmd_getex(
     }
 
     result
+}
+
+/// MSETEX numkeys key value [key value ...] [EX seconds | PX ms | EXAT ts | PXAT ts | KEEPTTL] [NX | XX]
+pub async fn cmd_msetex(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    if args.is_empty() {
+        return wrong_arg_count("msetex");
+    }
+
+    let numkeys = match arg_to_i64(&args[0]) {
+        Some(n) if n > 0 => n as usize,
+        _ => return RespValue::error("ERR invalid numkeys value"),
+    };
+
+    if args.len() < 1 + numkeys * 2 {
+        return RespValue::error("ERR wrong number of key-value pairs for 'msetex' command");
+    }
+
+    let mut pairs = Vec::with_capacity(numkeys);
+    for i in 0..numkeys {
+        let key = match arg_to_string(&args[1 + i * 2]) {
+            Some(k) => k,
+            None => return RespValue::error("ERR invalid key"),
+        };
+        let val = match arg_to_bytes(&args[2 + i * 2]) {
+            Some(v) => v,
+            None => return RespValue::error("ERR invalid value"),
+        };
+        pairs.push((key, val));
+    }
+
+    let flag_start = 1 + numkeys * 2;
+    let mut expire_ms: Option<u64> = None;
+    let mut nx = false;
+    let mut xx = false;
+    let mut keepttl = false;
+    let mut i = flag_start;
+    while i < args.len() {
+        let flag = match arg_to_string(&args[i]) {
+            Some(f) => f.to_uppercase(),
+            None => return RespValue::error("ERR syntax error"),
+        };
+        match flag.as_str() {
+            "EX" => {
+                if expire_ms.is_some() || keepttl { return RespValue::error("ERR syntax error"); }
+                i += 1;
+                match args.get(i).and_then(|a| arg_to_i64(a)) {
+                    Some(s) if s > 0 => expire_ms = Some(s as u64 * 1000),
+                    _ => return RespValue::error("ERR invalid expire time in 'msetex' command"),
+                }
+            }
+            "PX" => {
+                if expire_ms.is_some() || keepttl { return RespValue::error("ERR syntax error"); }
+                i += 1;
+                match args.get(i).and_then(|a| arg_to_i64(a)) {
+                    Some(ms) if ms > 0 => expire_ms = Some(ms as u64),
+                    _ => return RespValue::error("ERR invalid expire time in 'msetex' command"),
+                }
+            }
+            "EXAT" => {
+                if expire_ms.is_some() || keepttl { return RespValue::error("ERR syntax error"); }
+                i += 1;
+                match args.get(i).and_then(|a| arg_to_i64(a)) {
+                    Some(ts) if ts > 0 => expire_ms = Some(ts as u64 * 1000),
+                    _ => return RespValue::error("ERR invalid expire time in 'msetex' command"),
+                }
+            }
+            "PXAT" => {
+                if expire_ms.is_some() || keepttl { return RespValue::error("ERR syntax error"); }
+                i += 1;
+                match args.get(i).and_then(|a| arg_to_i64(a)) {
+                    Some(ts) if ts > 0 => expire_ms = Some(ts as u64),
+                    _ => return RespValue::error("ERR invalid expire time in 'msetex' command"),
+                }
+            }
+            "KEEPTTL" => {
+                if expire_ms.is_some() { return RespValue::error("ERR syntax error"); }
+                keepttl = true;
+            }
+            "NX" => {
+                if xx { return RespValue::error("ERR syntax error"); }
+                nx = true;
+            }
+            "XX" => {
+                if nx { return RespValue::error("ERR syntax error"); }
+                xx = true;
+            }
+            _ => return RespValue::error("ERR syntax error"),
+        }
+        i += 1;
+    }
+
+    let now = now_millis();
+    let mut store = store.write().await;
+    let db = &mut store.databases[client.db_index];
+
+    if nx {
+        for (key, _) in &pairs {
+            if db.get(key).is_some() {
+                return RespValue::Integer(0);
+            }
+        }
+    }
+    if xx {
+        for (key, _) in &pairs {
+            if db.get(key).is_none() {
+                return RespValue::Integer(0);
+            }
+        }
+    }
+
+    for (key, val) in pairs {
+        let expires_at = if keepttl {
+            db.get_expiry(&key)
+        } else {
+            expire_ms.map(|ms| now + ms)
+        };
+        let entry = Entry {
+            value: RedisValue::String(RedisString::new(val.to_vec())),
+            expires_at,
+        };
+        db.set(key, entry);
+    }
+
+    if nx || xx {
+        RespValue::Integer(1)
+    } else {
+        RespValue::ok()
+    }
+}
+
+/// LCS key1 key2 [LEN] [IDX] [MINMATCHLEN len] [WITHMATCHLEN]
+pub async fn cmd_lcs(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    if args.len() < 2 {
+        return wrong_arg_count("lcs");
+    }
+    let key1 = match arg_to_string(&args[0]) { Some(k) => k, None => return wrong_arg_count("lcs") };
+    let key2 = match arg_to_string(&args[1]) { Some(k) => k, None => return wrong_arg_count("lcs") };
+
+    let mut get_len = false;
+    let mut get_idx = false;
+    let mut min_match_len: usize = 0;
+    let mut with_match_len = false;
+    let mut i = 2;
+    while i < args.len() {
+        let opt = match arg_to_string(&args[i]) { Some(s) => s.to_uppercase(), None => return RespValue::error("ERR syntax error") };
+        match opt.as_str() {
+            "LEN" => get_len = true,
+            "IDX" => get_idx = true,
+            "MINMATCHLEN" => {
+                i += 1;
+                min_match_len = match args.get(i).and_then(|a| arg_to_i64(a)) {
+                    Some(n) if n >= 0 => n as usize,
+                    _ => return RespValue::error("ERR syntax error"),
+                };
+            }
+            "WITHMATCHLEN" => with_match_len = true,
+            _ => return RespValue::error("ERR syntax error"),
+        }
+        i += 1;
+    }
+
+    let mut store = store.write().await;
+    let db = &mut store.databases[client.db_index];
+    let a = db.get(&key1).and_then(|e| match &e.value {
+        RedisValue::String(s) => Some(s.as_bytes().to_vec()),
+        _ => None,
+    }).unwrap_or_default();
+    let b = db.get(&key2).and_then(|e| match &e.value {
+        RedisValue::String(s) => Some(s.as_bytes().to_vec()),
+        _ => None,
+    }).unwrap_or_default();
+
+    let m = a.len();
+    let n = b.len();
+
+    // Build LCS DP table
+    let mut dp = vec![vec![0u32; n + 1]; m + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            if a[i - 1] == b[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = std::cmp::max(dp[i - 1][j], dp[i][j - 1]);
+            }
+        }
+    }
+
+    let lcs_len = dp[m][n] as i64;
+
+    if get_len {
+        return RespValue::Integer(lcs_len);
+    }
+
+    if get_idx {
+        // Backtrack to find matching ranges
+        let mut matches = Vec::new();
+        let mut i = m;
+        let mut j = n;
+        while i > 0 && j > 0 {
+            if a[i - 1] == b[j - 1] {
+                let ai_end = i - 1;
+                let bj_end = j - 1;
+                // Extend match backward
+                while i > 1 && j > 1 && a[i - 2] == b[j - 2] {
+                    i -= 1;
+                    j -= 1;
+                }
+                let ai_start = i - 1;
+                let bj_start = j - 1;
+                let match_len = ai_end - ai_start + 1;
+                if match_len >= min_match_len {
+                    matches.push((ai_start, ai_end, bj_start, bj_end, match_len));
+                }
+                i -= 1;
+                j -= 1;
+            } else if dp[i - 1][j] > dp[i][j - 1] {
+                i -= 1;
+            } else {
+                j -= 1;
+            }
+        }
+
+        let mut result_matches = Vec::new();
+        for (ai_start, ai_end, bj_start, bj_end, match_len) in &matches {
+            let pair = vec![
+                RespValue::array(vec![RespValue::Integer(*ai_start as i64), RespValue::Integer(*ai_end as i64)]),
+                RespValue::array(vec![RespValue::Integer(*bj_start as i64), RespValue::Integer(*bj_end as i64)]),
+            ];
+            if with_match_len {
+                result_matches.push(RespValue::array(vec![
+                    pair[0].clone(), pair[1].clone(), RespValue::Integer(*match_len as i64),
+                ]));
+            } else {
+                result_matches.push(RespValue::array(pair));
+            }
+        }
+
+        return RespValue::array(vec![
+            RespValue::bulk_string(b"matches".to_vec()),
+            RespValue::array(result_matches),
+            RespValue::bulk_string(b"len".to_vec()),
+            RespValue::Integer(lcs_len),
+        ]);
+    }
+
+    // Default: return the LCS string
+    let mut lcs = Vec::new();
+    let mut i = m;
+    let mut j = n;
+    while i > 0 && j > 0 {
+        if a[i - 1] == b[j - 1] {
+            lcs.push(a[i - 1]);
+            i -= 1;
+            j -= 1;
+        } else if dp[i - 1][j] > dp[i][j - 1] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    lcs.reverse();
+    RespValue::bulk_string(lcs)
 }

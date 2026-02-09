@@ -11,13 +11,42 @@ use tokio::sync::RwLock;
 #[derive(Debug)]
 pub struct Database {
     data: HashMap<String, Entry>,
+    /// Monotonically increasing version counter for WATCH support.
+    key_versions: HashMap<String, u64>,
+    version_seq: u64,
 }
 
 impl Database {
     pub fn new() -> Self {
         Database {
             data: HashMap::new(),
+            key_versions: HashMap::new(),
+            version_seq: 0,
         }
+    }
+
+    /// Bump the version of a key (called after writes for WATCH support).
+    pub fn touch(&mut self, key: &str) {
+        self.version_seq += 1;
+        self.key_versions.insert(key.to_string(), self.version_seq);
+    }
+
+    /// Bump the global version (for FLUSHDB/FLUSHALL).
+    pub fn touch_all(&mut self) {
+        self.version_seq += 1;
+        // Clear specific versions; any WATCH check will see version mismatch
+        // since we increment version_seq past any stored version.
+        self.key_versions.clear();
+    }
+
+    /// Get the current version of a key (0 if never written).
+    pub fn key_version(&self, key: &str) -> u64 {
+        self.key_versions.get(key).copied().unwrap_or(0)
+    }
+
+    /// Get the global version sequence (for touch_all detection).
+    pub fn global_version(&self) -> u64 {
+        self.version_seq
     }
 
     /// Get a value, performing lazy expiration.
@@ -128,6 +157,11 @@ impl Database {
 
         let next_cursor = if i >= total { 0 } else { i };
         (next_cursor, results)
+    }
+
+    /// Get the expiry timestamp of a key, if any.
+    pub fn get_expiry(&self, key: &str) -> Option<u64> {
+        self.data.get(key).and_then(|e| e.expires_at)
     }
 
     /// Set expiry on a key. Returns true if the key exists.
@@ -313,6 +347,8 @@ impl Database {
 #[derive(Debug)]
 pub struct DataStore {
     pub databases: Vec<Database>,
+    /// Tracks changes since last RDB save for INFO rdb_changes_since_last_save.
+    pub dirty: u64,
 }
 
 impl DataStore {
@@ -321,7 +357,7 @@ impl DataStore {
         for _ in 0..num_databases {
             databases.push(Database::new());
         }
-        DataStore { databases }
+        DataStore { databases, dirty: 0 }
     }
 
     pub fn db(&mut self, index: usize) -> &mut Database {
