@@ -3,6 +3,9 @@ pub mod list;
 pub mod hash;
 pub mod set;
 pub mod sorted_set;
+pub mod stream;
+pub mod bitmap;
+pub mod hyperloglog;
 pub mod key;
 pub mod server_cmd;
 pub mod pubsub;
@@ -10,6 +13,7 @@ pub mod transaction;
 
 use crate::config::SharedConfig;
 use crate::connection::ClientState;
+use crate::keywatcher::SharedKeyWatcher;
 use crate::pubsub::SharedPubSub;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
@@ -24,6 +28,7 @@ pub async fn dispatch(
     client: &mut ClientState,
     pubsub: &SharedPubSub,
     pubsub_tx: &mpsc::UnboundedSender<RespValue>,
+    key_watcher: &SharedKeyWatcher,
 ) -> RespValue {
     // If in MULTI mode and this isn't EXEC/DISCARD/MULTI, queue the command
     if client.in_multi && !matches!(cmd_name, "EXEC" | "DISCARD" | "MULTI") {
@@ -96,8 +101,8 @@ pub async fn dispatch(
         "SORT" => key::cmd_sort(args, store, client).await,
 
         // Lists
-        "LPUSH" => list::cmd_lpush(args, store, client).await,
-        "RPUSH" => list::cmd_rpush(args, store, client).await,
+        "LPUSH" => list::cmd_lpush(args, store, client, key_watcher).await,
+        "RPUSH" => list::cmd_rpush(args, store, client, key_watcher).await,
         "LPOP" => list::cmd_lpop(args, store, client).await,
         "RPOP" => list::cmd_rpop(args, store, client).await,
         "LLEN" => list::cmd_llen(args, store, client).await,
@@ -111,8 +116,8 @@ pub async fn dispatch(
         "LMOVE" => list::cmd_lmove(args, store, client).await,
         "LPOS" => list::cmd_lpos(args, store, client).await,
         "LMPOP" => list::cmd_lmpop(args, store, client).await,
-        "BLPOP" => list::cmd_blpop(args, store, client).await,
-        "BRPOP" => list::cmd_brpop(args, store, client).await,
+        "BLPOP" => list::cmd_blpop(args, store, client, key_watcher).await,
+        "BRPOP" => list::cmd_brpop(args, store, client, key_watcher).await,
 
         // Hashes
         "HSET" => hash::cmd_hset(args, store, client).await,
@@ -174,9 +179,29 @@ pub async fn dispatch(
         "ZMSCORE" => sorted_set::cmd_zmscore(args, store, client).await,
         "ZLEXCOUNT" => sorted_set::cmd_zlexcount(args, store, client).await,
 
+        // Streams
+        "XADD" => stream::cmd_xadd(args, store, client).await,
+        "XLEN" => stream::cmd_xlen(args, store, client).await,
+        "XRANGE" => stream::cmd_xrange(args, store, client).await,
+        "XREVRANGE" => stream::cmd_xrevrange(args, store, client).await,
+        "XREAD" => stream::cmd_xread(args, store, client).await,
+        "XTRIM" => stream::cmd_xtrim(args, store, client).await,
+
+        // Bitmaps
+        "SETBIT" => bitmap::cmd_setbit(args, store, client).await,
+        "GETBIT" => bitmap::cmd_getbit(args, store, client).await,
+        "BITCOUNT" => bitmap::cmd_bitcount(args, store, client).await,
+        "BITOP" => bitmap::cmd_bitop(args, store, client).await,
+        "BITPOS" => bitmap::cmd_bitpos(args, store, client).await,
+
+        // HyperLogLog
+        "PFADD" => hyperloglog::cmd_pfadd(args, store, client).await,
+        "PFCOUNT" => hyperloglog::cmd_pfcount(args, store, client).await,
+        "PFMERGE" => hyperloglog::cmd_pfmerge(args, store, client).await,
+
         // Transactions
         "MULTI" => transaction::cmd_multi(client),
-        "EXEC" => transaction::cmd_exec(store, config, client, pubsub, pubsub_tx).await,
+        "EXEC" => transaction::cmd_exec(store, config, client, pubsub, pubsub_tx, key_watcher).await,
         "DISCARD" => transaction::cmd_discard(client),
         "WATCH" => transaction::cmd_watch(args, store, client).await,
         "UNWATCH" => transaction::cmd_unwatch(client),

@@ -1,5 +1,6 @@
 use redis::Commands;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
 fn start_server(port: u16) -> tokio::task::JoinHandle<()> {
@@ -1338,6 +1339,504 @@ async fn test_getdel() {
 
         let exists: bool = conn.exists("mykey").unwrap();
         assert!(!exists);
+    })
+    .await
+    .unwrap();
+}
+
+// =========== Bitmap tests ===========
+
+#[tokio::test]
+async fn test_setbit_getbit() {
+    let port = 16430;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // SETBIT returns old value (0)
+        let old: i64 = redis::cmd("SETBIT").arg("bm").arg(7).arg(1).query(&mut conn).unwrap();
+        assert_eq!(old, 0);
+
+        // GETBIT should return 1
+        let bit: i64 = redis::cmd("GETBIT").arg("bm").arg(7).query(&mut conn).unwrap();
+        assert_eq!(bit, 1);
+
+        // GETBIT on unset bit returns 0
+        let bit: i64 = redis::cmd("GETBIT").arg("bm").arg(0).query(&mut conn).unwrap();
+        assert_eq!(bit, 0);
+
+        // SETBIT again returns old value (1)
+        let old: i64 = redis::cmd("SETBIT").arg("bm").arg(7).arg(0).query(&mut conn).unwrap();
+        assert_eq!(old, 1);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_bitcount() {
+    let port = 16431;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: () = redis::cmd("SET").arg("mykey").arg("foobar").query(&mut conn).unwrap();
+        let count: i64 = redis::cmd("BITCOUNT").arg("mykey").query(&mut conn).unwrap();
+        assert!(count > 0);
+
+        // BITCOUNT with range
+        let count: i64 = redis::cmd("BITCOUNT")
+            .arg("mykey")
+            .arg(0)
+            .arg(0)
+            .query(&mut conn)
+            .unwrap();
+        assert!(count > 0);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_bitop() {
+    let port = 16432;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: i64 = redis::cmd("SETBIT").arg("a").arg(0).arg(1).query(&mut conn).unwrap();
+        let _: i64 = redis::cmd("SETBIT").arg("a").arg(1).arg(1).query(&mut conn).unwrap();
+        let _: i64 = redis::cmd("SETBIT").arg("b").arg(0).arg(1).query(&mut conn).unwrap();
+        let _: i64 = redis::cmd("SETBIT").arg("b").arg(2).arg(1).query(&mut conn).unwrap();
+
+        // AND
+        let len: i64 = redis::cmd("BITOP")
+            .arg("AND")
+            .arg("dest")
+            .arg("a")
+            .arg("b")
+            .query(&mut conn)
+            .unwrap();
+        assert!(len > 0);
+        let bit: i64 = redis::cmd("GETBIT").arg("dest").arg(0).query(&mut conn).unwrap();
+        assert_eq!(bit, 1); // Both have bit 0 set
+        let bit: i64 = redis::cmd("GETBIT").arg("dest").arg(1).query(&mut conn).unwrap();
+        assert_eq!(bit, 0); // Only a has bit 1
+
+        // OR
+        let _: i64 = redis::cmd("BITOP")
+            .arg("OR")
+            .arg("dest2")
+            .arg("a")
+            .arg("b")
+            .query(&mut conn)
+            .unwrap();
+        let bit: i64 = redis::cmd("GETBIT").arg("dest2").arg(1).query(&mut conn).unwrap();
+        assert_eq!(bit, 1);
+        let bit: i64 = redis::cmd("GETBIT").arg("dest2").arg(2).query(&mut conn).unwrap();
+        assert_eq!(bit, 1);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_bitpos() {
+    let port = 16433;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: i64 = redis::cmd("SETBIT").arg("bm").arg(10).arg(1).query(&mut conn).unwrap();
+
+        let pos: i64 = redis::cmd("BITPOS").arg("bm").arg(1).query(&mut conn).unwrap();
+        assert_eq!(pos, 10);
+
+        let pos: i64 = redis::cmd("BITPOS").arg("bm").arg(0).query(&mut conn).unwrap();
+        assert_eq!(pos, 0);
+    })
+    .await
+    .unwrap();
+}
+
+// =========== HyperLogLog tests ===========
+
+#[tokio::test]
+async fn test_pfadd_pfcount() {
+    let port = 16434;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let changed: i64 = redis::cmd("PFADD")
+            .arg("hll")
+            .arg("a")
+            .arg("b")
+            .arg("c")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(changed, 1);
+
+        let count: i64 = redis::cmd("PFCOUNT").arg("hll").query(&mut conn).unwrap();
+        assert!(count >= 2 && count <= 4); // HLL is approximate
+
+        // Adding duplicate should return 0
+        let changed: i64 = redis::cmd("PFADD")
+            .arg("hll")
+            .arg("a")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(changed, 0);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_pfmerge() {
+    let port = 16435;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: i64 = redis::cmd("PFADD")
+            .arg("hll1")
+            .arg("a")
+            .arg("b")
+            .query(&mut conn)
+            .unwrap();
+        let _: i64 = redis::cmd("PFADD")
+            .arg("hll2")
+            .arg("c")
+            .arg("d")
+            .query(&mut conn)
+            .unwrap();
+
+        let _: String = redis::cmd("PFMERGE")
+            .arg("merged")
+            .arg("hll1")
+            .arg("hll2")
+            .query(&mut conn)
+            .unwrap();
+
+        let count: i64 = redis::cmd("PFCOUNT").arg("merged").query(&mut conn).unwrap();
+        assert!(count >= 3 && count <= 5); // Should be ~4
+    })
+    .await
+    .unwrap();
+}
+
+// =========== Stream tests ===========
+
+#[tokio::test]
+async fn test_xadd_xlen() {
+    let port = 16436;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // XADD with auto-generated ID
+        let id: String = redis::cmd("XADD")
+            .arg("stream")
+            .arg("*")
+            .arg("name")
+            .arg("Alice")
+            .arg("age")
+            .arg("30")
+            .query(&mut conn)
+            .unwrap();
+        assert!(id.contains('-')); // ID format is ms-seq
+
+        let _: String = redis::cmd("XADD")
+            .arg("stream")
+            .arg("*")
+            .arg("name")
+            .arg("Bob")
+            .query(&mut conn)
+            .unwrap();
+
+        let len: i64 = redis::cmd("XLEN").arg("stream").query(&mut conn).unwrap();
+        assert_eq!(len, 2);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_xrange() {
+    let port = 16437;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: String = redis::cmd("XADD")
+            .arg("mystream")
+            .arg("*")
+            .arg("field1")
+            .arg("value1")
+            .query(&mut conn)
+            .unwrap();
+        let _: String = redis::cmd("XADD")
+            .arg("mystream")
+            .arg("*")
+            .arg("field2")
+            .arg("value2")
+            .query(&mut conn)
+            .unwrap();
+
+        // XRANGE - get all entries
+        let entries: Vec<redis::Value> = redis::cmd("XRANGE")
+            .arg("mystream")
+            .arg("-")
+            .arg("+")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_xtrim() {
+    let port = 16438;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Add 5 entries
+        for i in 0..5 {
+            let _: String = redis::cmd("XADD")
+                .arg("mystream")
+                .arg("*")
+                .arg("i")
+                .arg(i.to_string())
+                .query(&mut conn)
+                .unwrap();
+        }
+
+        let len: i64 = redis::cmd("XLEN").arg("mystream").query(&mut conn).unwrap();
+        assert_eq!(len, 5);
+
+        // XTRIM to 2
+        let trimmed: i64 = redis::cmd("XTRIM")
+            .arg("mystream")
+            .arg("MAXLEN")
+            .arg(2)
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(trimmed, 3);
+
+        let len: i64 = redis::cmd("XLEN").arg("mystream").query(&mut conn).unwrap();
+        assert_eq!(len, 2);
+    })
+    .await
+    .unwrap();
+}
+
+// =========== True blocking BLPOP test ===========
+
+#[tokio::test]
+async fn test_blpop_blocking() {
+    let port = 16439;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Spawn a task that will BLPOP on an empty key, then another that pushes to it
+    let blpop_handle = tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+        let start = Instant::now();
+
+        // BLPOP with 5 second timeout on an empty key
+        let result: Vec<String> = redis::cmd("BLPOP")
+            .arg("blockkey")
+            .arg(5)
+            .query(&mut conn)
+            .unwrap();
+
+        let elapsed = start.elapsed();
+        // Should have blocked for some time (at least 100ms) before getting data
+        assert!(elapsed.as_millis() >= 50, "BLPOP returned too quickly: {elapsed:?}");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "blockkey");
+        assert_eq!(result[1], "hello");
+    });
+
+    // Wait a bit, then push data from another connection
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+        let _: () = conn.lpush("blockkey", "hello").unwrap();
+    })
+    .await
+    .unwrap();
+
+    blpop_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_blpop_timeout() {
+    let port = 16440;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+        let start = Instant::now();
+
+        // BLPOP with 1 second timeout on nonexistent key
+        let result: redis::Value = redis::cmd("BLPOP")
+            .arg("nokey")
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
+
+        let elapsed = start.elapsed();
+        assert!(elapsed.as_millis() >= 900, "BLPOP timed out too quickly: {elapsed:?}");
+        assert_eq!(result, redis::Value::Nil);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_brpop_blocking() {
+    let port = 16441;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let brpop_handle = tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+        let start = Instant::now();
+
+        let result: Vec<String> = redis::cmd("BRPOP")
+            .arg("brkey")
+            .arg(5)
+            .query(&mut conn)
+            .unwrap();
+
+        let elapsed = start.elapsed();
+        assert!(elapsed.as_millis() >= 50, "BRPOP returned too quickly");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "brkey");
+        assert_eq!(result[1], "world");
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+        let _: () = conn.rpush("brkey", "world").unwrap();
+    })
+    .await
+    .unwrap();
+
+    brpop_handle.await.unwrap();
+}
+
+// =========== Config / eviction test ===========
+
+#[tokio::test]
+async fn test_config_maxmemory() {
+    let port = 16442;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Set maxmemory via CONFIG SET
+        let _: String = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("maxmemory")
+            .arg("1000000")
+            .query(&mut conn)
+            .unwrap();
+
+        // Verify via CONFIG GET
+        let result: Vec<String> = redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("maxmemory")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "maxmemory");
+        assert_eq!(result[1], "1000000");
+
+        // Set maxmemory-policy
+        let _: String = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("maxmemory-policy")
+            .arg("allkeys-random")
+            .query(&mut conn)
+            .unwrap();
+
+        let result: Vec<String> = redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("maxmemory-policy")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result[1], "allkeys-random");
+    })
+    .await
+    .unwrap();
+}
+
+// =========== XREAD test ===========
+
+#[tokio::test]
+async fn test_xread() {
+    let port = 16443;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Add entries
+        let id1: String = redis::cmd("XADD")
+            .arg("s1")
+            .arg("*")
+            .arg("k")
+            .arg("v1")
+            .query(&mut conn)
+            .unwrap();
+
+        let _: String = redis::cmd("XADD")
+            .arg("s1")
+            .arg("*")
+            .arg("k")
+            .arg("v2")
+            .query(&mut conn)
+            .unwrap();
+
+        // XREAD: read entries after the first one
+        let result: redis::Value = redis::cmd("XREAD")
+            .arg("STREAMS")
+            .arg("s1")
+            .arg(&id1)
+            .query(&mut conn)
+            .unwrap();
+
+        // Should return a non-nil result with entries after id1
+        assert_ne!(result, redis::Value::Nil);
     })
     .await
     .unwrap();

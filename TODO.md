@@ -9,32 +9,16 @@
 - [x] SORT command (ASC/DESC, ALPHA, LIMIT, STORE)
 - [x] Graceful shutdown on SIGINT/SIGTERM
 - [x] Client idle timeout support
-- [x] Expanded test coverage: 81 tests (30 unit + 51 integration)
-- [x] Benchmark suite: 30-40K ops/sec single-client, 275K ops/sec pipelined
-
-## Phase 9 — True Blocking Commands
-
-- [ ] Implement real blocking for BLPOP/BRPOP using `tokio::sync::Notify`
-- [ ] Client wake-up when data is pushed to a watched key
-- [ ] BLMOVE with blocking semantics
-- [ ] BZPOPMIN, BZPOPMAX for sorted sets
-- [ ] Timeout handling with `tokio::time::timeout`
-
-## Phase 10 — Auto-Save & Persistence Improvements
-
-- [ ] Auto-save rules: trigger RDB save after N changes in M seconds (use save_rules config)
-- [ ] Track change counter across write commands
-- [ ] AOF rewrite triggered automatically based on AOF size
-- [ ] CONFIG SET appendonly yes/no to toggle AOF at runtime
-- [ ] Track and return actual last save timestamp for LASTSAVE
-
-## Phase 11 — Streams
-
-- [ ] Implement stream data type (time-series log)
-- [ ] XADD, XLEN, XRANGE, XREVRANGE
-- [ ] XREAD with blocking support
-- [ ] XTRIM (maxlen, minid)
-- [ ] Consumer groups: XGROUP CREATE, XREADGROUP, XACK, XPENDING
+- [x] True blocking BLPOP/BRPOP using `tokio::sync::Notify` with KeyWatcher, client wake-up on LPUSH/RPUSH
+- [x] Auto-save rules: trigger RDB save after N changes in M seconds, change counter across write commands
+- [x] CONFIG SET appendonly/maxmemory/maxmemory-policy at runtime
+- [x] Maxmemory enforcement with eviction policies (allkeys-random, volatile-random, volatile-ttl, noeviction)
+- [x] Memory eviction background loop
+- [x] Streams: XADD, XLEN, XRANGE, XREVRANGE, XREAD, XTRIM (maxlen)
+- [x] Bitmap: SETBIT, GETBIT, BITCOUNT, BITOP (AND/OR/XOR/NOT), BITPOS
+- [x] HyperLogLog: PFADD, PFCOUNT, PFMERGE
+- [x] Expanded test coverage: 112 tests (47 unit + 65 integration)
+- [x] Benchmark suite: 37K ops/sec single-client, 271K ops/sec pipelined
 
 ## Phase 12 — Lua Scripting
 
@@ -77,17 +61,18 @@
 - [ ] WAIT command
 - [ ] HELLO command (RESP3 negotiation stub)
 - [ ] ACL commands (basic user/password management)
-- [ ] SRANDMEMBER with count, SPOP with count
-- [ ] GEORADIUS / GEOADD / GEODIST (geo commands)
-- [ ] HyperLogLog: PFADD, PFCOUNT, PFMERGE
-- [ ] Bitmap: SETBIT, GETBIT, BITCOUNT, BITOP, BITPOS, BITFIELD
+- [ ] GEORADIUS / GEOADD / GEODIST / GEOSEARCH (geo commands)
+- [ ] BITFIELD command
+- [ ] BLMOVE, BZPOPMIN, BZPOPMAX
+- [ ] Consumer groups: XGROUP CREATE, XREADGROUP, XACK, XPENDING
+- [ ] RDB/AOF serialization for Stream and HyperLogLog types
 - [ ] Run against Redis TCL test suite in external mode
 
 ## Phase 17 — Production Hardening
 
-- [ ] Maxmemory enforcement with eviction policies (LRU, LFU, random, volatile)
 - [ ] Protected mode (refuse external connections without password)
 - [ ] TLS support via tokio-rustls
 - [ ] Unix socket support
 - [ ] Configurable TCP backlog and keep-alive
 - [ ] Better error handling and recovery for persistence failures
+- [ ] LRU/LFU eviction policies (with access tracking)

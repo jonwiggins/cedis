@@ -97,6 +97,12 @@ pub fn save(store: &DataStore, path: &str) -> io::Result<()> {
                         write_string(&mut file, value)?;
                     }
                 }
+                RedisValue::Stream(_) => {
+                    // Stream RDB serialization not yet implemented; skip
+                }
+                RedisValue::HyperLogLog(_) => {
+                    // HyperLogLog RDB serialization not yet implemented; skip
+                }
             }
         }
     }

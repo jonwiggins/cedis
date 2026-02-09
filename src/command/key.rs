@@ -433,6 +433,8 @@ pub async fn cmd_object(
                         crate::types::RedisValue::Hash(_) => "listpack",
                         crate::types::RedisValue::Set(_) => "listpack",
                         crate::types::RedisValue::SortedSet(_) => "listpack",
+                        crate::types::RedisValue::Stream(_) => "stream",
+                        crate::types::RedisValue::HyperLogLog(_) => "raw",
                     };
                     RespValue::bulk_string(encoding.as_bytes().to_vec())
                 }

@@ -213,6 +213,12 @@ pub fn rewrite(store: &DataStore, path: &str) -> io::Result<()> {
                         file.write_all(&RespValue::array(cmd_parts).serialize())?;
                     }
                 }
+                RedisValue::Stream(_) => {
+                    // Stream AOF serialization not yet implemented; skip
+                }
+                RedisValue::HyperLogLog(_) => {
+                    // HyperLogLog AOF serialization not yet implemented; skip
+                }
             }
 
             // Expiry

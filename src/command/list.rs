@@ -1,10 +1,12 @@
 use crate::command::{arg_to_bytes, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error};
 use crate::connection::ClientState;
+use crate::keywatcher::SharedKeyWatcher;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
 use crate::store::entry::Entry;
 use crate::types::RedisValue;
 use crate::types::list::RedisList;
+use std::time::Duration;
 
 fn get_or_create_list<'a>(
     db: &'a mut crate::store::Database,
@@ -27,6 +29,7 @@ pub async fn cmd_lpush(
     args: &[RespValue],
     store: &SharedStore,
     client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
 ) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("lpush");
@@ -50,13 +53,21 @@ pub async fn cmd_lpush(
         }
     }
 
-    RespValue::integer(list.len() as i64)
+    let len = list.len() as i64;
+    drop(store);
+
+    // Notify any clients blocked on this key
+    let mut watcher = key_watcher.write().await;
+    watcher.notify(&key);
+
+    RespValue::integer(len)
 }
 
 pub async fn cmd_rpush(
     args: &[RespValue],
     store: &SharedStore,
     client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
 ) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("rpush");
@@ -80,7 +91,14 @@ pub async fn cmd_rpush(
         }
     }
 
-    RespValue::integer(list.len() as i64)
+    let len = list.len() as i64;
+    drop(store);
+
+    // Notify any clients blocked on this key
+    let mut watcher = key_watcher.write().await;
+    watcher.notify(&key);
+
+    RespValue::integer(len)
 }
 
 pub async fn cmd_lpop(
@@ -666,9 +684,9 @@ pub async fn cmd_blpop(
     args: &[RespValue],
     store: &SharedStore,
     client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
 ) -> RespValue {
     // BLPOP key [key ...] timeout
-    // Non-blocking implementation: try to pop immediately, return nil if empty
     if args.len() < 2 {
         return wrong_arg_count("blpop");
     }
@@ -678,43 +696,60 @@ pub async fn cmd_blpop(
         .filter_map(arg_to_string)
         .collect();
 
-    // timeout is the last arg (we don't actually block)
-    let _timeout = arg_to_i64(&args[args.len() - 1]).unwrap_or(0);
+    let timeout_secs = match arg_to_i64(&args[args.len() - 1]) {
+        Some(t) if t >= 0 => t as u64,
+        _ => return RespValue::error("ERR timeout is not a float or out of range"),
+    };
 
-    let mut store = store.write().await;
-    let db = store.db(client.db_index);
-
-    for key in &keys {
-        match db.get_mut(key) {
-            Some(entry) => match &mut entry.value {
-                RedisValue::List(list) if !list.is_empty() => {
-                    let val = list.lpop().unwrap();
-                    let should_del = list.is_empty();
-                    let key_clone = key.clone();
-                    let key_resp = RespValue::bulk_string(key_clone.as_bytes().to_vec());
-                    let val_resp = RespValue::bulk_string(val);
-
-                    if should_del {
-                        db.del(&key_clone);
-                    }
-
-                    return RespValue::array(vec![key_resp, val_resp]);
-                }
-                _ => continue,
-            },
-            None => continue,
+    // Try immediate pop first
+    {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        if let Some(result) = try_lpop_from_keys(db, &keys) {
+            return result;
         }
     }
 
-    // In a full implementation, we would block here until data is available.
-    // For now, return null array (timeout immediately).
-    RespValue::null_array()
+    // If timeout is 0, block indefinitely; otherwise use the specified timeout
+    let timeout_dur = if timeout_secs == 0 {
+        Duration::from_secs(300) // Cap at 5 minutes to prevent infinite hangs
+    } else {
+        Duration::from_secs(timeout_secs)
+    };
+
+    // Register a single shared Notify for all keys
+    let notify = {
+        let mut watcher = key_watcher.write().await;
+        watcher.register_many(&keys)
+    };
+
+    // Wait for notification or timeout
+    let notified = tokio::select! {
+        _ = notify.notified() => true,
+        _ = tokio::time::sleep(timeout_dur) => false,
+    };
+
+    // Clean up watchers
+    {
+        let mut watcher = key_watcher.write().await;
+        watcher.unregister_many(&keys, &notify);
+    }
+
+    if !notified {
+        return RespValue::null_array();
+    }
+
+    // Try to pop after being notified
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+    try_lpop_from_keys(db, &keys).unwrap_or_else(RespValue::null_array)
 }
 
 pub async fn cmd_brpop(
     args: &[RespValue],
     store: &SharedStore,
     client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
 ) -> RespValue {
     // BRPOP key [key ...] timeout
     if args.len() < 2 {
@@ -726,12 +761,78 @@ pub async fn cmd_brpop(
         .filter_map(arg_to_string)
         .collect();
 
-    let _timeout = arg_to_i64(&args[args.len() - 1]).unwrap_or(0);
+    let timeout_secs = match arg_to_i64(&args[args.len() - 1]) {
+        Some(t) if t >= 0 => t as u64,
+        _ => return RespValue::error("ERR timeout is not a float or out of range"),
+    };
+
+    // Try immediate pop first
+    {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        if let Some(result) = try_rpop_from_keys(db, &keys) {
+            return result;
+        }
+    }
+
+    let timeout_dur = if timeout_secs == 0 {
+        Duration::from_secs(300)
+    } else {
+        Duration::from_secs(timeout_secs)
+    };
+
+    // Register a single shared Notify for all keys
+    let notify = {
+        let mut watcher = key_watcher.write().await;
+        watcher.register_many(&keys)
+    };
+
+    let notified = tokio::select! {
+        _ = notify.notified() => true,
+        _ = tokio::time::sleep(timeout_dur) => false,
+    };
+
+    {
+        let mut watcher = key_watcher.write().await;
+        watcher.unregister_many(&keys, &notify);
+    }
+
+    if !notified {
+        return RespValue::null_array();
+    }
 
     let mut store = store.write().await;
     let db = store.db(client.db_index);
+    try_rpop_from_keys(db, &keys).unwrap_or_else(RespValue::null_array)
+}
 
-    for key in &keys {
+/// Try to LPOP from the first non-empty list key. Returns None if all empty.
+fn try_lpop_from_keys(db: &mut crate::store::Database, keys: &[String]) -> Option<RespValue> {
+    for key in keys {
+        match db.get_mut(key) {
+            Some(entry) => match &mut entry.value {
+                RedisValue::List(list) if !list.is_empty() => {
+                    let val = list.lpop().unwrap();
+                    let should_del = list.is_empty();
+                    let key_clone = key.clone();
+                    let key_resp = RespValue::bulk_string(key_clone.as_bytes().to_vec());
+                    let val_resp = RespValue::bulk_string(val);
+                    if should_del {
+                        db.del(&key_clone);
+                    }
+                    return Some(RespValue::array(vec![key_resp, val_resp]));
+                }
+                _ => continue,
+            },
+            None => continue,
+        }
+    }
+    None
+}
+
+/// Try to RPOP from the first non-empty list key. Returns None if all empty.
+fn try_rpop_from_keys(db: &mut crate::store::Database, keys: &[String]) -> Option<RespValue> {
+    for key in keys {
         match db.get_mut(key) {
             Some(entry) => match &mut entry.value {
                 RedisValue::List(list) if !list.is_empty() => {
@@ -740,20 +841,17 @@ pub async fn cmd_brpop(
                     let key_clone = key.clone();
                     let key_resp = RespValue::bulk_string(key_clone.as_bytes().to_vec());
                     let val_resp = RespValue::bulk_string(val);
-
                     if should_del {
                         db.del(&key_clone);
                     }
-
-                    return RespValue::array(vec![key_resp, val_resp]);
+                    return Some(RespValue::array(vec![key_resp, val_resp]));
                 }
                 _ => continue,
             },
             None => continue,
         }
     }
-
-    RespValue::null_array()
+    None
 }
 
 pub async fn cmd_lpos(

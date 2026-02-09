@@ -1,6 +1,7 @@
 pub mod entry;
 
 use crate::glob::glob_match;
+use crate::types::RedisValue;
 use entry::{Entry, now_millis};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -208,6 +209,92 @@ impl Database {
             .filter(|e| e.expires_at.is_some())
             .count()
     }
+
+    /// Estimate memory usage of this database in bytes.
+    pub fn estimated_memory(&self) -> usize {
+        let mut total = 0usize;
+        for (key, entry) in &self.data {
+            // Key string bytes
+            total += key.len();
+            // Entry overhead (struct + Option<u64>)
+            total += 48;
+            // Value size estimate
+            total += match &entry.value {
+                RedisValue::String(s) => s.len(),
+                RedisValue::List(l) => {
+                    let element_bytes: usize = l.iter().map(|v| v.len()).sum();
+                    64 * l.len() + element_bytes
+                }
+                RedisValue::Hash(h) => {
+                    let field_bytes: usize = h.iter().map(|(k, v)| k.len() + v.len()).sum();
+                    96 * h.len() + field_bytes
+                }
+                RedisValue::Set(s) => {
+                    let member_bytes: usize = s.iter().map(|m| m.len()).sum();
+                    64 * s.len() + member_bytes
+                }
+                RedisValue::SortedSet(z) => {
+                    let member_bytes: usize = z.iter().map(|(m, _)| m.len()).sum();
+                    96 * z.len() + member_bytes
+                }
+                RedisValue::Stream(s) => {
+                    // Rough estimate: each entry has an ID (16 bytes) + fields
+                    128 * s.len()
+                }
+                RedisValue::HyperLogLog(_) => {
+                    // HyperLogLog uses a fixed 12KB register set
+                    12304
+                }
+            };
+        }
+        total
+    }
+
+    /// Evict one random key. Returns true if a key was evicted.
+    pub fn evict_one_random(&mut self) -> bool {
+        use rand::seq::IteratorRandom;
+        let mut rng = rand::thread_rng();
+        if let Some(key) = self.data.keys().choose(&mut rng).cloned() {
+            self.data.remove(&key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Evict one random key that has an expiry set. Returns true if a key was evicted.
+    pub fn evict_one_volatile_random(&mut self) -> bool {
+        use rand::seq::IteratorRandom;
+        let mut rng = rand::thread_rng();
+        if let Some(key) = self
+            .data
+            .iter()
+            .filter(|(_, e)| e.expires_at.is_some())
+            .map(|(k, _)| k.clone())
+            .choose(&mut rng)
+        {
+            self.data.remove(&key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Evict the key with the smallest TTL. Returns true if a key was evicted.
+    pub fn evict_one_volatile_ttl(&mut self) -> bool {
+        let key = self
+            .data
+            .iter()
+            .filter_map(|(k, e)| e.expires_at.map(|exp| (k.clone(), exp)))
+            .min_by_key(|(_, exp)| *exp)
+            .map(|(k, _)| k);
+        if let Some(key) = key {
+            self.data.remove(&key);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// The complete data store — holds multiple databases.
@@ -250,6 +337,11 @@ impl DataStore {
             total += db.active_expire(20);
         }
         total
+    }
+
+    /// Estimate total memory usage across all databases.
+    pub fn estimated_memory(&self) -> usize {
+        self.databases.iter().map(|db| db.estimated_memory()).sum()
     }
 }
 

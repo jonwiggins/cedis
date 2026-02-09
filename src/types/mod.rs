@@ -3,6 +3,9 @@ pub mod list;
 pub mod hash;
 pub mod set;
 pub mod sorted_set;
+pub mod stream;
+pub mod bitmap;
+pub mod hyperloglog;
 
 /// The core value type stored in the data store.
 #[derive(Debug, Clone)]
@@ -12,6 +15,8 @@ pub enum RedisValue {
     Hash(hash::RedisHash),
     Set(set::RedisSet),
     SortedSet(sorted_set::RedisSortedSet),
+    Stream(stream::RedisStream),
+    HyperLogLog(hyperloglog::HyperLogLog),
 }
 
 impl RedisValue {
@@ -22,6 +27,8 @@ impl RedisValue {
             RedisValue::Hash(_) => "hash",
             RedisValue::Set(_) => "set",
             RedisValue::SortedSet(_) => "zset",
+            RedisValue::Stream(_) => "stream",
+            RedisValue::HyperLogLog(_) => "hyperloglog",
         }
     }
 
@@ -91,6 +98,34 @@ impl RedisValue {
     pub fn as_sorted_set_mut(&mut self) -> Option<&mut sorted_set::RedisSortedSet> {
         match self {
             RedisValue::SortedSet(z) => Some(z),
+            _ => None,
+        }
+    }
+
+    pub fn as_stream(&self) -> Option<&stream::RedisStream> {
+        match self {
+            RedisValue::Stream(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_stream_mut(&mut self) -> Option<&mut stream::RedisStream> {
+        match self {
+            RedisValue::Stream(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_hyperloglog(&self) -> Option<&hyperloglog::HyperLogLog> {
+        match self {
+            RedisValue::HyperLogLog(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    pub fn as_hyperloglog_mut(&mut self) -> Option<&mut hyperloglog::HyperLogLog> {
+        match self {
+            RedisValue::HyperLogLog(h) => Some(h),
             _ => None,
         }
     }

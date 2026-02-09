@@ -1,16 +1,21 @@
 use crate::command;
 use crate::config::SharedConfig;
 use crate::connection::ClientState;
+use crate::keywatcher::{KeyWatcher, SharedKeyWatcher};
 use crate::persistence::aof::SharedAofWriter;
 use crate::pubsub::{PubSubReceiver, SharedPubSub};
 use crate::resp::{RespParser, RespValue};
 use crate::store::SharedStore;
 use bytes::BytesMut;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
+
+type SharedChangeCounter = Arc<AtomicU64>;
 
 pub async fn run_server(
     store: SharedStore,
@@ -27,6 +32,9 @@ pub async fn run_server(
     let listener = TcpListener::bind(&addr).await?;
     info!("Cedis server listening on {addr}");
 
+    let change_counter: SharedChangeCounter = Arc::new(AtomicU64::new(0));
+    let key_watcher: SharedKeyWatcher = Arc::new(RwLock::new(KeyWatcher::new()));
+
     // Spawn active expiration background task
     let store_clone = store.clone();
     let config_clone = config.clone();
@@ -40,6 +48,21 @@ pub async fn run_server(
         aof_fsync_loop(aof_clone).await;
     });
 
+    // Spawn auto-save background task
+    let store_clone = store.clone();
+    let config_clone = config.clone();
+    let changes_clone = change_counter.clone();
+    tokio::spawn(async move {
+        auto_save_loop(store_clone, config_clone, changes_clone).await;
+    });
+
+    // Spawn memory eviction background task
+    let store_clone = store.clone();
+    let config_clone = config.clone();
+    tokio::spawn(async move {
+        memory_eviction_loop(store_clone, config_clone).await;
+    });
+
     // Accept loop with graceful shutdown on ctrl-c
     loop {
         tokio::select! {
@@ -51,9 +74,11 @@ pub async fn run_server(
                 let config = config.clone();
                 let pubsub = pubsub.clone();
                 let aof = aof.clone();
+                let change_counter = change_counter.clone();
+                let key_watcher = key_watcher.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof).await {
+                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher).await {
                         debug!("Connection error from {peer_addr}: {e}");
                     }
                     debug!("Connection closed: {peer_addr}");
@@ -76,6 +101,8 @@ async fn handle_connection(
     config: SharedConfig,
     pubsub: SharedPubSub,
     aof: SharedAofWriter,
+    change_counter: SharedChangeCounter,
+    key_watcher: SharedKeyWatcher,
 ) -> std::io::Result<()> {
     let mut client = ClientState::new();
     let mut buf = BytesMut::with_capacity(4096);
@@ -105,6 +132,8 @@ async fn handle_connection(
                         &pubsub,
                         &pubsub_tx,
                         &aof,
+                        &change_counter,
+                        &key_watcher,
                     )
                     .await;
 
@@ -182,6 +211,7 @@ fn is_write_command(cmd: &str) -> bool {
             | "HSET" | "HDEL" | "HINCRBY" | "HINCRBYFLOAT" | "HSETNX" | "HMSET"
             | "SADD" | "SREM" | "SPOP" | "SMOVE"
             | "ZADD" | "ZREM" | "ZINCRBY" | "ZUNIONSTORE" | "ZINTERSTORE" | "ZPOPMIN" | "ZPOPMAX"
+            | "SETBIT" | "PFADD" | "PFMERGE" | "XADD" | "XTRIM" | "BITOP"
             | "FLUSHDB" | "FLUSHALL" | "SWAPDB" | "SELECT"
     )
 }
@@ -194,6 +224,8 @@ async fn process_command(
     pubsub: &SharedPubSub,
     pubsub_tx: &mpsc::UnboundedSender<RespValue>,
     aof: &SharedAofWriter,
+    change_counter: &SharedChangeCounter,
+    key_watcher: &SharedKeyWatcher,
 ) -> RespValue {
     let items = match value {
         RespValue::Array(Some(items)) if !items.is_empty() => items,
@@ -230,9 +262,10 @@ async fn process_command(
         if aof.is_active() {
             let _ = aof.log_command(&cmd_name, args);
         }
+        change_counter.fetch_add(1, Ordering::Relaxed);
     }
 
-    command::dispatch(&cmd_name, args, store, config, client, pubsub, pubsub_tx).await
+    command::dispatch(&cmd_name, args, store, config, client, pubsub, pubsub_tx, key_watcher).await
 }
 
 async fn cleanup_client(pubsub: &SharedPubSub, client: &ClientState) {
@@ -262,5 +295,76 @@ async fn aof_fsync_loop(aof: SharedAofWriter) {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let mut aof = aof.lock().await;
         let _ = aof.flush();
+    }
+}
+
+/// Background task that periodically saves RDB snapshots based on save rules.
+async fn auto_save_loop(store: SharedStore, config: SharedConfig, changes: SharedChangeCounter) {
+    let mut last_save = std::time::Instant::now();
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (save_rules, dir, dbfilename) = {
+            let cfg = config.read().await;
+            (cfg.save_rules.clone(), cfg.dir.clone(), cfg.dbfilename.clone())
+        };
+        let current_changes = changes.load(Ordering::Relaxed);
+        let elapsed = last_save.elapsed().as_secs();
+
+        let should_save = save_rules.iter().any(|(secs, min_changes)| {
+            elapsed >= *secs && current_changes >= *min_changes
+        });
+
+        if should_save && current_changes > 0 {
+            let store = store.read().await;
+            let path = format!("{dir}/{dbfilename}");
+            if let Err(e) = crate::persistence::rdb::save(&store, &path) {
+                tracing::warn!("Auto-save failed: {e}");
+            } else {
+                tracing::info!("Auto-save completed ({current_changes} changes)");
+            }
+            drop(store);
+            changes.store(0, Ordering::Relaxed);
+            last_save = std::time::Instant::now();
+        }
+    }
+}
+
+/// Background task that evicts keys when memory usage exceeds maxmemory.
+async fn memory_eviction_loop(store: SharedStore, config: SharedConfig) {
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (maxmemory, policy) = {
+            let cfg = config.read().await;
+            (cfg.maxmemory, cfg.maxmemory_policy.clone())
+        };
+        if maxmemory == 0 {
+            continue; // No limit set
+        }
+        let mut store = store.write().await;
+        let used = store.estimated_memory();
+        if used <= maxmemory as usize {
+            continue;
+        }
+        // Evict keys until under limit or no more keys
+        for _ in 0..10 {
+            let evicted = match policy.as_str() {
+                "allkeys-random" => {
+                    store.databases.iter_mut().any(|db| db.evict_one_random())
+                }
+                "volatile-random" => {
+                    store.databases.iter_mut().any(|db| db.evict_one_volatile_random())
+                }
+                "volatile-ttl" => {
+                    store.databases.iter_mut().any(|db| db.evict_one_volatile_ttl())
+                }
+                _ => false, // noeviction - do nothing
+            };
+            if !evicted {
+                break;
+            }
+            if store.estimated_memory() <= maxmemory as usize {
+                break;
+            }
+        }
     }
 }

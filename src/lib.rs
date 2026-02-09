@@ -12,6 +12,7 @@ pub mod config;
 pub mod connection;
 pub mod error;
 pub mod glob;
+pub mod keywatcher;
 pub mod persistence;
 pub mod pubsub;
 pub mod resp;
