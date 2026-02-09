@@ -2,46 +2,65 @@
 
 A Redis-compatible in-memory data store built from scratch in Rust.
 
-Cedis speaks the **RESP2 protocol** and implements Redis's core data structures — strings, lists, hashes, sets, and sorted sets — along with key expiration, transactions, and a configurable server. All without using any existing Redis or RESP libraries.
+Cedis speaks the **RESP2 protocol** and implements Redis's core data structures along with persistence, pub/sub, transactions, Lua scripting, and more. All without using any existing Redis or RESP libraries. Wire-compatible with `redis-cli`, the `redis` crate (Rust), `redis-py` (Python), and `ioredis` (Node.js).
 
 ## Highlights
 
-- **100+ commands** — full coverage of strings, lists, hashes, sets, sorted sets, key management, transactions, and server administration
-- **RESP2 protocol** — streaming parser/serializer built from scratch, supporting both framed and inline commands
-- **Wire-compatible** — works with `redis-cli`, the `redis` crate, and any standard Redis client
-- **Command pipelining** — multiple commands in a single TCP read are processed without extra round-trips
-- **Transactions** — `MULTI`/`EXEC`/`DISCARD` with `WATCH`/`UNWATCH` optimistic locking
-- **Key expiration** — lazy expiration on access + active background sweep
-- **Multiple databases** — 16 databases by default with `SELECT`, `SWAPDB`, `FLUSHDB`/`FLUSHALL`
-- **Configurable** — CLI flags (`--port`, `--bind`, etc.) and runtime `CONFIG GET`/`SET`
-- **~5,500 lines of library code** — compact, readable, single-crate implementation
-- **51 tests** — 30 unit tests (RESP parser, glob matching) + 21 integration tests using the `redis` crate as a real client
+- **100+ commands** across strings, lists, hashes, sets, sorted sets, streams, bitmaps, HyperLogLog, geospatial, pub/sub, transactions, Lua scripting, and server administration
+- **RESP2 protocol** with streaming parser/serializer supporting both framed and inline commands
+- **Wire-compatible** with any standard Redis client
+- **RDB + AOF persistence** with auto-save rules and background rewriting
+- **Pub/Sub** with pattern subscriptions
+- **Lua scripting** via embedded Lua 5.4 (EVAL/EVALSHA with 60+ commands from Lua)
+- **Blocking commands** (BLPOP/BRPOP) with async client wake-up
+- **Memory eviction** with configurable maxmemory and eviction policies
+- **~12,400 lines of Rust** across 42 source files
+- **120 tests** (47 unit + 73 integration)
+- **85K ops/sec** single-client, **371K ops/sec** pipelined (redis-benchmark)
 
 ## Supported Commands
 
-### Strings (20)
-`GET` `SET` (EX/PX/NX/XX/KEEPTTL/GET/EXAT/PXAT) `GETSET` `MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `INCR` `DECR` `INCRBY` `DECRBY` `INCRBYFLOAT` `SETNX` `SETEX` `PSETEX` `GETRANGE` `SETRANGE` `GETDEL`
+### Strings (21)
+`GET` `SET` (EX/PX/NX/XX/KEEPTTL/GET/EXAT/PXAT) `GETEX` `GETSET` `MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `INCR` `DECR` `INCRBY` `DECRBY` `INCRBYFLOAT` `SETNX` `SETEX` `PSETEX` `GETRANGE` `SETRANGE` `GETDEL`
 
-### Lists (14)
-`LPUSH` `RPUSH` `LPOP` `RPOP` `LLEN` `LRANGE` `LINDEX` `LSET` `LINSERT` `LREM` `LTRIM` `RPOPLPUSH` `LMOVE` `LPOS`
+### Lists (16)
+`LPUSH` `RPUSH` `LPOP` `RPOP` `LLEN` `LRANGE` `LINDEX` `LSET` `LINSERT` `LREM` `LTRIM` `RPOPLPUSH` `LMOVE` `LPOS` `LMPOP` `BLPOP` `BRPOP`
 
-### Hashes (14)
+### Hashes (15)
 `HSET` `HGET` `HDEL` `HEXISTS` `HLEN` `HKEYS` `HVALS` `HGETALL` `HMSET` `HMGET` `HINCRBY` `HINCRBYFLOAT` `HSETNX` `HRANDFIELD` `HSCAN`
 
-### Sets (16)
+### Sets (17)
 `SADD` `SREM` `SISMEMBER` `SMISMEMBER` `SMEMBERS` `SCARD` `SPOP` `SRANDMEMBER` `SUNION` `SINTER` `SDIFF` `SUNIONSTORE` `SINTERSTORE` `SDIFFSTORE` `SMOVE` `SSCAN` `SINTERCARD`
 
 ### Sorted Sets (22)
 `ZADD` (NX/XX/GT/LT/CH/INCR) `ZREM` `ZSCORE` `ZRANK` `ZREVRANK` `ZCARD` `ZCOUNT` `ZRANGE` `ZREVRANGE` `ZRANGEBYSCORE` `ZREVRANGEBYSCORE` `ZRANGEBYLEX` `ZREVRANGEBYLEX` `ZINCRBY` `ZUNIONSTORE` `ZINTERSTORE` `ZRANDMEMBER` `ZSCAN` `ZPOPMIN` `ZPOPMAX` `ZMSCORE` `ZLEXCOUNT`
 
-### Keys (14)
-`DEL` `UNLINK` `EXISTS` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST` `TYPE` `RENAME` `RENAMENX` `KEYS` `SCAN` `RANDOMKEY` `OBJECT` `DUMP` `RESTORE`
+### Streams (6)
+`XADD` `XLEN` `XRANGE` `XREVRANGE` `XREAD` `XTRIM`
+
+### Bitmaps (5)
+`SETBIT` `GETBIT` `BITCOUNT` `BITOP` (AND/OR/XOR/NOT) `BITPOS`
+
+### HyperLogLog (3)
+`PFADD` `PFCOUNT` `PFMERGE`
+
+### Geospatial (8)
+`GEOADD` (NX/XX/CH) `GEODIST` `GEOPOS` `GEOSEARCH` `GEORADIUS` `GEORADIUSBYMEMBER` `GEOSEARCHSTORE` `GEOHASH`
+
+### Keys (19)
+`DEL` `UNLINK` `EXISTS` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `EXPIRETIME` `PEXPIRETIME` `TTL` `PTTL` `PERSIST` `TYPE` `RENAME` `RENAMENX` `KEYS` `SCAN` `RANDOMKEY` `OBJECT` (ENCODING/REFCOUNT/IDLETIME/FREQ/HELP) `SORT` `COPY`
+
+### Pub/Sub (6)
+`SUBSCRIBE` `UNSUBSCRIBE` `PUBLISH` `PSUBSCRIBE` `PUNSUBSCRIBE` `PUBSUB` (CHANNELS/NUMSUB/NUMPAT)
 
 ### Transactions (5)
 `MULTI` `EXEC` `DISCARD` `WATCH` `UNWATCH`
 
-### Server (16)
-`PING` `ECHO` `QUIT` `SELECT` `AUTH` `DBSIZE` `FLUSHDB` `FLUSHALL` `SWAPDB` `INFO` `CONFIG` `TIME` `COMMAND` `CLIENT` `DEBUG` `RESET` `SAVE` `BGSAVE` `BGREWRITEAOF` `LASTSAVE`
+### Scripting (3)
+`EVAL` `EVALSHA` `SCRIPT` (LOAD/EXISTS/FLUSH)
+
+### Server (20)
+`PING` `ECHO` `QUIT` `SELECT` `AUTH` `DBSIZE` `FLUSHDB` `FLUSHALL` `SWAPDB` `INFO` `CONFIG` (GET/SET/RESETSTAT) `TIME` `COMMAND` `CLIENT` (SETNAME/GETNAME/ID/LIST/INFO) `DEBUG` `RESET` `HELLO` `SAVE` `BGSAVE` `BGREWRITEAOF` `LASTSAVE`
 
 ## Getting Started
 
@@ -55,10 +74,16 @@ cargo build --release
 
 ```bash
 # Default: listens on 127.0.0.1:6379
-cargo run --release --bin cedis
+./target/release/cedis
 
 # Custom port and bind address
-cargo run --release --bin cedis -- --port 6380 --bind 0.0.0.0
+./target/release/cedis --port 6380 --bind 0.0.0.0
+
+# With password
+./target/release/cedis --requirepass mysecretpassword
+
+# With AOF persistence
+./target/release/cedis --appendonly yes
 ```
 
 ### Connect with any Redis client
@@ -74,66 +99,94 @@ cargo run --release --bin cedis-cli
 ### Run the tests
 
 ```bash
+# All tests (47 unit + 73 integration)
+cargo test
+
 # Unit tests only
 cargo test --lib
 
-# Integration tests (starts a server automatically)
+# Integration tests
 cargo test --test integration_test
-
-# All tests
-cargo test
 ```
+
+## Performance
+
+Benchmarked with `redis-benchmark` (50 clients, 100,000 requests):
+
+| Command | Throughput | Pipelined (P=16) |
+|---------|-----------|------------------|
+| SET | 85,324 req/sec | 371,747 req/sec |
+| GET | 86,133 req/sec | 225,734 req/sec |
+| LPUSH | 87,108 req/sec | |
+| LPOP | 86,580 req/sec | |
+| SADD | 86,806 req/sec | |
+| ZADD | 86,505 req/sec | |
+| MSET (10 keys) | 79,491 req/sec | |
+
+Passes Redis's own TCL test suite for auth, quit, and info in external mode.
 
 ## Architecture
 
 ```
 src/
-  main.rs              Entry point — CLI arg parsing and server startup
-  lib.rs               Crate root — module declarations
-  resp.rs              RESP2 streaming parser and serializer (with inline command support)
-  server.rs            Async TCP server (tokio) with per-connection task spawning
+  main.rs              Entry point, CLI arg parsing
+  server.rs            Async TCP server (tokio), per-connection tasks, AOF logging
+  resp.rs              RESP2 streaming parser/serializer with inline command support
+  config.rs            Runtime configuration with CLI flags and CONFIG GET/SET
   connection.rs        Per-client state (db index, auth, transaction queue)
-  config.rs            Runtime configuration with CLI flag parsing
-  error.rs             Error types
+  scripting.rs         Lua scripting engine (redis.call/redis.pcall, 60+ commands)
+  pubsub.rs            Pub/Sub message broker with pattern matching
+  keywatcher.rs        Async notification for BLPOP/BRPOP wake-up
   glob.rs              Redis-style glob pattern matching
   store/
-    mod.rs             Multi-database key-value store with lazy + active expiration
+    mod.rs             Multi-database store with lazy + active expiration
     entry.rs           Key entry with TTL metadata
   types/
-    mod.rs             RedisValue enum (String | List | Hash | Set | SortedSet)
-    rstring.rs         Binary-safe string with INCR/GETRANGE support
+    rstring.rs         Binary-safe string with integer optimization
     list.rs            VecDeque-backed list
     hash.rs            HashMap-backed hash
-    set.rs             HashSet-backed set
-    sorted_set.rs      BTreeMap + HashMap sorted set with f64 score ordering
+    set.rs             HashSet-backed set with intset detection
+    sorted_set.rs      BTreeMap + HashMap sorted set with f64 ordering
+    stream.rs          Append-only stream with ID generation
+    bitmap.rs          Bit array with range operations
+    hyperloglog.rs     Probabilistic cardinality estimator
+    geo.rs             Geospatial index with haversine distance
   command/
-    mod.rs             Central dispatch table (command name -> handler)
+    mod.rs             Central dispatch (100+ commands)
     string.rs          String command handlers
     list.rs            List command handlers
     hash.rs            Hash command handlers
     set.rs             Set command handlers
     sorted_set.rs      Sorted set command handlers
-    key.rs             Key management command handlers
-    server_cmd.rs      Server/connection command handlers
-    transaction.rs     MULTI/EXEC/WATCH handlers
-    pubsub.rs          Pub/Sub placeholder
+    stream.rs          Stream command handlers
+    bitmap.rs          Bitmap command handlers
+    hyperloglog.rs     HyperLogLog command handlers
+    geo.rs             Geo command handlers
+    key.rs             Key management commands
+    server_cmd.rs      Server/connection commands
+    pubsub.rs          Pub/Sub commands
+    transaction.rs     MULTI/EXEC/WATCH
+    scripting.rs       EVAL/EVALSHA/SCRIPT
+  persistence/
+    rdb.rs             RDB snapshot save/load
+    aof.rs             AOF append/rewrite/replay
   bin/
     cedis-cli.rs       Minimal interactive CLI client
 tests/
-    integration_test.rs  21 integration tests using the redis crate
+    integration_test.rs  73 integration tests using the redis crate
 ```
 
 ## Design Decisions
 
-- **No Redis/RESP library dependencies** — the RESP parser, serializer, data structures, and command handlers are all implemented from scratch. Only general-purpose crates are used (tokio, bytes, thiserror, rand, tracing).
+- **No Redis/RESP library dependencies** &mdash; the RESP parser, serializer, data structures, and command handlers are all implemented from scratch. Only general-purpose crates are used (tokio, bytes, mlua, thiserror, rand, tracing).
 
-- **Single shared store behind `Arc<RwLock>`** — simple concurrency model that matches Redis's single-threaded semantics. Each connection gets its own `ClientState` for per-client data (selected DB, transaction queue, auth status).
+- **Single shared store behind `Arc<RwLock>`** &mdash; simple concurrency model that matches Redis's single-threaded semantics. Each connection gets its own `ClientState` for per-client data (selected DB, transaction queue, auth status).
 
-- **Sorted set ordering** — uses a bit-level transform (`f64_to_orderable`) to convert IEEE 754 floats into u64 values that sort correctly in a `BTreeMap`, giving O(log n) range queries without a custom comparator.
+- **Lazy + active expiration** &mdash; keys are lazily expired on access, plus a background task samples keys periodically to proactively reclaim memory.
 
-- **Lazy + active expiration** — keys are lazily expired on access (checked on every `GET`/`EXISTS`), plus a background task samples keys periodically to proactively reclaim memory.
+- **Streaming RESP parser** &mdash; handles partial TCP reads and command pipelining naturally. Returns `Ok(None)` when more data is needed, allowing the server loop to read more and retry.
 
-- **Streaming RESP parser** — handles partial TCP reads and command pipelining naturally. The parser consumes bytes from a `BytesMut` buffer and returns `Ok(None)` when more data is needed, allowing the server loop to read more data and retry.
+- **Embedded Lua 5.4** &mdash; full `redis.call()` / `redis.pcall()` implementation supporting 60+ Redis commands from within Lua scripts, with proper error handling and RESP value conversion.
 
 ## Configuration
 
@@ -146,7 +199,10 @@ tests/
 | `--timeout` | `0` | Client idle timeout (seconds, 0 = disabled) |
 | `--hz` | `10` | Background task frequency |
 | `--loglevel` | `notice` | Log level |
-| `--appendonly` | `no` | AOF persistence (planned) |
+| `--appendonly` | `no` | Enable AOF persistence |
+| `--appendfsync` | `everysec` | AOF fsync policy (always/everysec/no) |
+| `--dbfilename` | `dump.rdb` | RDB filename |
+| `--dir` | `.` | Working directory for persistence files |
 
 All configurable parameters are also available via `CONFIG GET`/`CONFIG SET` at runtime.
 

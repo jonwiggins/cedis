@@ -493,17 +493,44 @@ pub async fn cmd_hscan(
         }
     };
 
+    // Parse optional MATCH, COUNT, NOVALUES
+    let mut pattern: Option<String> = None;
+    let mut novalues = false;
+    let mut i = 2;
+    while i < args.len() {
+        let opt = match arg_to_string(&args[i]) {
+            Some(s) => s.to_uppercase(),
+            None => { i += 1; continue; }
+        };
+        match opt.as_str() {
+            "MATCH" => {
+                i += 1;
+                pattern = args.get(i).and_then(|a| arg_to_string(a));
+            }
+            "COUNT" => { i += 1; } // skip count value
+            "NOVALUES" => { novalues = true; }
+            _ => {}
+        }
+        i += 1;
+    }
+
     let mut store = store.write().await;
     let db = store.db(client.db_index);
 
     match db.get(&key) {
         Some(entry) => match &entry.value {
             RedisValue::Hash(h) => {
-                // Simple implementation: return all fields at once
                 let mut result = Vec::new();
                 for (field, value) in h.entries() {
+                    if let Some(ref pat) = pattern {
+                        if !crate::glob::glob_match(pat, field) {
+                            continue;
+                        }
+                    }
                     result.push(RespValue::bulk_string(field.as_bytes().to_vec()));
-                    result.push(RespValue::bulk_string(value.clone()));
+                    if !novalues {
+                        result.push(RespValue::bulk_string(value.clone()));
+                    }
                 }
                 RespValue::array(vec![
                     RespValue::bulk_string(b"0".to_vec()),

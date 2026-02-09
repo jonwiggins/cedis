@@ -237,9 +237,9 @@ impl RespParser {
         }
 
         if len < -1 {
-            return Err(RespError::InvalidData(format!(
-                "Invalid bulk string length: {len}"
-            )));
+            // Negative length other than -1: treat as null
+            buf.advance(crlf + 2);
+            return Ok(Some(RespValue::BulkString(None)));
         }
 
         let len = len as usize;
@@ -280,9 +280,9 @@ impl RespParser {
         }
 
         if len < -1 {
-            return Err(RespError::InvalidData(format!(
-                "Invalid array length: {len}"
-            )));
+            // Negative multibulk length other than -1: treat as null array
+            buf.advance(crlf + 2);
+            return Ok(Some(RespValue::Array(None)));
         }
 
         let len = len as usize;

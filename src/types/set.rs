@@ -109,4 +109,14 @@ impl RedisSet {
     pub fn into_inner(self) -> HashSet<Vec<u8>> {
         self.data
     }
+
+    /// Check if all members are integers (for intset encoding detection).
+    pub fn is_all_integers(&self) -> bool {
+        self.data.iter().all(|member| {
+            std::str::from_utf8(member)
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .is_some()
+        })
+    }
 }

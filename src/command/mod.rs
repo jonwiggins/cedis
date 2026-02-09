@@ -81,6 +81,7 @@ pub async fn dispatch(
         "GETRANGE" => string::cmd_getrange(args, store, client).await,
         "SETRANGE" => string::cmd_setrange(args, store, client).await,
         "GETDEL" => string::cmd_getdel(args, store, client).await,
+        "GETEX" => string::cmd_getex(args, store, client).await,
 
         // Keys
         "DEL" => key::cmd_del(args, store, client).await,
@@ -92,6 +93,8 @@ pub async fn dispatch(
         "PEXPIREAT" => key::cmd_pexpireat(args, store, client).await,
         "TTL" => key::cmd_ttl(args, store, client).await,
         "PTTL" => key::cmd_pttl(args, store, client).await,
+        "EXPIRETIME" => key::cmd_expiretime(args, store, client).await,
+        "PEXPIRETIME" => key::cmd_pexpiretime(args, store, client).await,
         "PERSIST" => key::cmd_persist(args, store, client).await,
         "TYPE" => key::cmd_type(args, store, client).await,
         "RENAME" => key::cmd_rename(args, store, client).await,
@@ -209,6 +212,10 @@ pub async fn dispatch(
         "GEODIST" => geo::cmd_geodist(args, store, client).await,
         "GEOPOS" => geo::cmd_geopos(args, store, client).await,
         "GEOSEARCH" => geo::cmd_geosearch(args, store, client).await,
+        "GEORADIUS" => geo::cmd_georadius(args, store, client).await,
+        "GEORADIUSBYMEMBER" => geo::cmd_georadiusbymember(args, store, client).await,
+        "GEOSEARCHSTORE" => geo::cmd_geosearchstore(args, store, client).await,
+        "GEOHASH" => geo::cmd_geohash(args, store, client).await,
         "GEOMEMBERS" => geo::cmd_geomembers(args, store, client).await,
 
         // Transactions
@@ -236,6 +243,34 @@ pub async fn dispatch(
         "EVAL" => scripting::cmd_eval(args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await,
         "EVALSHA" => scripting::cmd_evalsha(args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await,
         "SCRIPT" => scripting::cmd_script(args, script_cache).await,
+
+        // Stubs for compatibility
+        "FUNCTION" => RespValue::ok(),
+        "HELLO" => server_cmd::cmd_hello(args),
+        "WAIT" => RespValue::integer(0),
+        "FCALL" | "FCALL_RO" => RespValue::error("ERR Function not found"),
+        "PFSELFTEST" => RespValue::ok(),
+        "PFDEBUG" => {
+            // PFDEBUG encoding key -> return "sparse" or "dense"
+            if args.first().and_then(|a| arg_to_string(a)).map(|s| s.to_uppercase()).as_deref() == Some("ENCODING") {
+                RespValue::bulk_string(b"sparse".to_vec())
+            } else {
+                RespValue::ok()
+            }
+        }
+        "XINFO" => RespValue::error("ERR unknown subcommand"),
+        "SUBSTR" => string::cmd_getrange(args, store, client).await,
+        "MEMORY" => {
+            if args.first().and_then(|a| a.to_string_lossy()).map(|s| s.to_uppercase()).as_deref() == Some("USAGE") {
+                RespValue::integer(0)
+            } else {
+                RespValue::error("ERR unknown MEMORY subcommand")
+            }
+        }
+        "SLOWLOG" => RespValue::array(vec![]),
+        "LATENCY" => RespValue::array(vec![]),
+        "CLUSTER" => RespValue::error("ERR This instance has cluster support disabled"),
+        "WAITAOF" => RespValue::array(vec![RespValue::integer(0), RespValue::integer(0)]),
 
         _ => {
             let args_preview: Vec<String> = args

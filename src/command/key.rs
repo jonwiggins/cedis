@@ -200,6 +200,56 @@ pub async fn cmd_pttl(
     }
 }
 
+pub async fn cmd_expiretime(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 1 {
+        return wrong_arg_count("expiretime");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::integer(-2),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get(&key) {
+        Some(entry) => match entry.expires_at {
+            Some(ms) => RespValue::integer((ms / 1000) as i64),
+            None => RespValue::integer(-1),
+        },
+        None => RespValue::integer(-2),
+    }
+}
+
+pub async fn cmd_pexpiretime(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 1 {
+        return wrong_arg_count("pexpiretime");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::integer(-2),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get(&key) {
+        Some(entry) => match entry.expires_at {
+            Some(ms) => RespValue::integer(ms as i64),
+            None => RespValue::integer(-1),
+        },
+        None => RespValue::integer(-2),
+    }
+}
+
 pub async fn cmd_persist(
     args: &[RespValue],
     store: &SharedStore,
@@ -337,6 +387,7 @@ pub async fn cmd_scan(
 
     let mut pattern = None;
     let mut count = 10usize;
+    let mut type_filter = None;
     let mut i = 1;
     while i < args.len() {
         let opt = match arg_to_string(&args[i]) {
@@ -359,7 +410,7 @@ pub async fn cmd_scan(
             }
             "TYPE" => {
                 i += 1;
-                // TYPE filter - not fully implemented yet
+                type_filter = arg_to_string(args.get(i).unwrap_or(&RespValue::null_bulk_string()));
             }
             _ => {}
         }
@@ -369,7 +420,7 @@ pub async fn cmd_scan(
     let store = store.read().await;
     let db = &store.databases[client.db_index];
 
-    let (next_cursor, keys) = db.scan(cursor, pattern.as_deref(), count);
+    let (next_cursor, keys) = db.scan_with_type(cursor, pattern.as_deref(), count, type_filter.as_deref());
 
     let key_values: Vec<RespValue> = keys
         .into_iter()
@@ -438,7 +489,13 @@ pub async fn cmd_object(
                             if h.len() <= 128 { "listpack" } else { "hashtable" }
                         }
                         crate::types::RedisValue::Set(s) => {
-                            if s.len() <= 128 { "listpack" } else { "hashtable" }
+                            if s.is_all_integers() && s.len() <= 512 {
+                                "intset"
+                            } else if s.len() <= 128 {
+                                "listpack"
+                            } else {
+                                "hashtable"
+                            }
                         }
                         crate::types::RedisValue::SortedSet(z) => {
                             if z.len() <= 128 { "listpack" } else { "skiplist" }

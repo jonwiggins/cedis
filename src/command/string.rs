@@ -646,3 +646,75 @@ pub async fn cmd_getdel(
     db.del(&key);
     result
 }
+
+/// GETEX key [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | PERSIST]
+pub async fn cmd_getex(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.is_empty() {
+        return wrong_arg_count("getex");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    let result = match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::String(s) => RespValue::bulk_string(s.as_bytes().to_vec()),
+            _ => return wrong_type_error(),
+        },
+        None => return RespValue::null_bulk_string(),
+    };
+
+    // Parse expiry options
+    if args.len() >= 2 {
+        let opt = match arg_to_string(&args[1]) {
+            Some(s) => s.to_uppercase(),
+            None => return result,
+        };
+        match opt.as_str() {
+            "EX" => {
+                if let Some(secs) = args.get(2).and_then(arg_to_i64) {
+                    if secs > 0 {
+                        let expires_at = now_millis() + (secs as u64) * 1000;
+                        db.set_expiry(&key, expires_at);
+                    }
+                }
+            }
+            "PX" => {
+                if let Some(ms) = args.get(2).and_then(arg_to_i64) {
+                    if ms > 0 {
+                        let expires_at = now_millis() + ms as u64;
+                        db.set_expiry(&key, expires_at);
+                    }
+                }
+            }
+            "EXAT" => {
+                if let Some(ts) = args.get(2).and_then(arg_to_i64) {
+                    if ts > 0 {
+                        db.set_expiry(&key, (ts as u64) * 1000);
+                    }
+                }
+            }
+            "PXAT" => {
+                if let Some(ts) = args.get(2).and_then(arg_to_i64) {
+                    if ts > 0 {
+                        db.set_expiry(&key, ts as u64);
+                    }
+                }
+            }
+            "PERSIST" => {
+                db.persist(&key);
+            }
+            _ => {}
+        }
+    }
+
+    result
+}

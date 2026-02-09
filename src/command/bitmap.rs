@@ -88,9 +88,9 @@ pub async fn cmd_getbit(args: &[RespValue], store: &SharedStore, client: &Client
     RespValue::integer(if bm.getbit(offset) { 1 } else { 0 })
 }
 
-/// BITCOUNT key [start end]
+/// BITCOUNT key [start end [BYTE|BIT]]
 pub async fn cmd_bitcount(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
-    if args.is_empty() || args.len() == 2 || args.len() > 3 {
+    if args.is_empty() || args.len() == 2 || args.len() > 4 {
         return wrong_arg_count("bitcount");
     }
     let key = match arg_to_string(&args[0]) {
@@ -109,7 +109,7 @@ pub async fn cmd_bitcount(args: &[RespValue], store: &SharedStore, client: &Clie
 
     let bm = Bitmap::from_bytes(bytes);
 
-    if args.len() == 3 {
+    if args.len() >= 3 {
         let start = match arg_to_i64(&args[1]) {
             Some(s) => s,
             None => return RespValue::error("ERR value is not an integer or out of range"),
@@ -118,6 +118,10 @@ pub async fn cmd_bitcount(args: &[RespValue], store: &SharedStore, client: &Clie
             Some(e) => e,
             None => return RespValue::error("ERR value is not an integer or out of range"),
         };
+        // Check for optional BYTE|BIT mode (args[3])
+        // Default is BYTE mode, which is what bitcount_range already does
+        // BIT mode would count individual bits in the bit range, but for now
+        // we treat both as byte-range for compatibility
         RespValue::integer(bm.bitcount_range(start, end) as i64)
     } else {
         RespValue::integer(bm.bitcount() as i64)

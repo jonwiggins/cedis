@@ -89,6 +89,11 @@ impl Database {
     /// Scan with cursor-based iteration.
     /// Returns (next_cursor, keys).
     pub fn scan(&self, cursor: usize, pattern: Option<&str>, count: usize) -> (usize, Vec<String>) {
+        self.scan_with_type(cursor, pattern, count, None)
+    }
+
+    /// Scan with cursor-based iteration and optional type filter.
+    pub fn scan_with_type(&self, cursor: usize, pattern: Option<&str>, count: usize, type_filter: Option<&str>) -> (usize, Vec<String>) {
         let now = now_millis();
         let all_keys: Vec<&String> = self
             .data
@@ -110,7 +115,11 @@ impl Database {
 
         while i < total && scanned < count {
             let key = all_keys[i];
-            if pattern.map_or(true, |p| glob_match(p, key)) {
+            let matches_pattern = pattern.map_or(true, |p| glob_match(p, key));
+            let matches_type = type_filter.map_or(true, |t| {
+                self.data.get(key).map_or(false, |entry| entry.value.type_name().eq_ignore_ascii_case(t))
+            });
+            if matches_pattern && matches_type {
                 results.push(key.clone());
             }
             i += 1;

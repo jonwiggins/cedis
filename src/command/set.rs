@@ -521,7 +521,7 @@ pub async fn cmd_sintercard(args: &[RespValue], store: &SharedStore, client: &Cl
     }
     let numkeys = match arg_to_i64(&args[0]) {
         Some(n) if n > 0 => n as usize,
-        _ => return RespValue::error("ERR numkeys can't be non-positive value"),
+        _ => return RespValue::error("ERR Number of keys can't be non-positive value"),
     };
 
     if args.len() < 1 + numkeys {

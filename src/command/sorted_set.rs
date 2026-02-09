@@ -71,8 +71,8 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
             return RespValue::error("ERR INCR option supports a single increment-element pair");
         }
         let score = match arg_to_f64(&pairs[0]) {
-            Some(s) => s,
-            None => return RespValue::error("ERR value is not a valid float"),
+            Some(s) if !s.is_nan() => s,
+            _ => return RespValue::error("ERR value is not a valid float"),
         };
         let member = match arg_to_bytes(&pairs[1]) {
             Some(m) => m.to_vec(),
@@ -101,8 +101,8 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
 
         for pair in pairs.chunks(2) {
             let score = match arg_to_f64(&pair[0]) {
-                Some(s) => s,
-                None => return RespValue::error("ERR value is not a valid float"),
+                Some(s) if !s.is_nan() => s,
+                _ => return RespValue::error("ERR value is not a valid float"),
             };
             let member = match arg_to_bytes(&pair[1]) {
                 Some(m) => m.to_vec(),
@@ -598,8 +598,8 @@ pub async fn cmd_zincrby(args: &[RespValue], store: &SharedStore, client: &Clien
         None => return RespValue::error("ERR invalid key"),
     };
     let delta = match arg_to_f64(&args[1]) {
-        Some(s) => s,
-        None => return RespValue::error("ERR value is not a valid float"),
+        Some(s) if !s.is_nan() => s,
+        _ => return RespValue::error("ERR value is not a valid float"),
     };
     let member = match arg_to_bytes(&args[2]) {
         Some(m) => m.to_vec(),

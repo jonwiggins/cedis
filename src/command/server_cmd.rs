@@ -347,6 +347,11 @@ pub async fn cmd_debug(args: &[RespValue]) -> RespValue {
             RespValue::ok()
         }
         "SET-ACTIVE-EXPIRE" => RespValue::ok(),
+        "RELOAD" => RespValue::ok(),
+        "JMAP" | "QUICKLIST-PACKED-THRESHOLD" => RespValue::ok(),
+        "DIGEST-VALUE" | "DIGEST" => RespValue::bulk_string(b"0000000000000000000000000000000000000000".to_vec()),
+        "OBJECT" => RespValue::ok(),
+        "CHANGE-REPL-ID" => RespValue::ok(),
         _ => RespValue::error(format!("ERR Unknown DEBUG subcommand '{subcmd}'")),
     }
 }
@@ -404,6 +409,41 @@ pub async fn cmd_bgrewriteaof(store: &SharedStore, config: &SharedConfig) -> Res
         }
     });
     RespValue::SimpleString("Background append only file rewriting started".to_string())
+}
+
+pub fn cmd_hello(args: &[RespValue]) -> RespValue {
+    // HELLO [protover [AUTH username password] [SETNAME clientname]]
+    // We respond in RESP2 format regardless; accept proto 2 or 3 for compatibility
+    let proto = if !args.is_empty() {
+        match arg_to_i64(&args[0]) {
+            Some(2) => 2,
+            Some(3) => 2, // Accept HELLO 3 but respond with RESP2
+            Some(v) if v >= 1 => {
+                return RespValue::error("NOPROTO unsupported protocol version");
+            }
+            _ => 2,
+        }
+    } else {
+        2
+    };
+
+    // Return server info as alternating key-value array (RESP2 map encoding)
+    RespValue::array(vec![
+        RespValue::bulk_string(b"server".to_vec()),
+        RespValue::bulk_string(b"cedis".to_vec()),
+        RespValue::bulk_string(b"version".to_vec()),
+        RespValue::bulk_string(b"0.1.0".to_vec()),
+        RespValue::bulk_string(b"proto".to_vec()),
+        RespValue::integer(proto as i64),
+        RespValue::bulk_string(b"id".to_vec()),
+        RespValue::integer(1),
+        RespValue::bulk_string(b"mode".to_vec()),
+        RespValue::bulk_string(b"standalone".to_vec()),
+        RespValue::bulk_string(b"role".to_vec()),
+        RespValue::bulk_string(b"master".to_vec()),
+        RespValue::bulk_string(b"modules".to_vec()),
+        RespValue::array(vec![]),
+    ])
 }
 
 pub fn cmd_lastsave() -> RespValue {

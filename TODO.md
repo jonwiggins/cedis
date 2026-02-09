@@ -18,12 +18,17 @@
 - [x] Bitmap: SETBIT, GETBIT, BITCOUNT, BITOP (AND/OR/XOR/NOT), BITPOS
 - [x] HyperLogLog: PFADD, PFCOUNT, PFMERGE
 - [x] Lua Scripting: EVAL, EVALSHA, SCRIPT LOAD/EXISTS/FLUSH, redis.call()/redis.pcall(), KEYS/ARGV
-- [x] Geo commands: GEOADD (NX/XX/CH), GEODIST, GEOPOS, GEOSEARCH (FROMLONLAT/FROMMEMBER, BYRADIUS/BYBOX, WITHCOORD/WITHDIST)
+- [x] Geo commands: GEOADD, GEODIST, GEOPOS, GEOSEARCH, GEORADIUS, GEORADIUSBYMEMBER, GEOSEARCHSTORE, GEOHASH
 - [x] COPY command (with DB and REPLACE options)
-- [x] OBJECT ENCODING with proper encoding detection (int/embstr/raw, listpack/quicklist/hashtable/skiplist)
-- [x] OBJECT FREQ, OBJECT HELP improvements
-- [x] Expanded test coverage: 120 tests (47 unit + 73 integration)
-- [x] Benchmark suite: 37K ops/sec single-client, 271K ops/sec pipelined
+- [x] OBJECT ENCODING with proper encoding detection (int/embstr/raw, listpack/intset/quicklist/hashtable/skiplist)
+- [x] OBJECT FREQ, OBJECT HELP, OBJECT REFCOUNT, OBJECT IDLETIME
+- [x] GETEX command (EX/PX/EXAT/PXAT/PERSIST)
+- [x] EXPIRETIME and PEXPIRETIME commands
+- [x] HELLO command (RESP2/RESP3 compatibility)
+- [x] Compatibility stubs: FUNCTION, WAIT, MEMORY USAGE, SLOWLOG, LATENCY, CLUSTER, WAITAOF, FCALL
+- [x] Redis TCL test suite: 3 suites pass (auth, quit, info)
+- [x] Benchmark: 85K ops/sec single-client, 371K ops/sec pipelined SET
+- [x] 120 tests (47 unit + 73 integration)
 
 ## Phase 13 — Cluster & Replication Basics
 
@@ -44,7 +49,7 @@
 
 ## Phase 15 — Observability & Admin
 
-- [ ] MEMORY USAGE command
+- [ ] MEMORY USAGE command (real implementation)
 - [ ] SLOWLOG (track slow commands)
 - [ ] MONITOR command (real-time command stream)
 - [ ] CLIENT LIST with full connection metadata
@@ -52,14 +57,13 @@
 
 ## Phase 16 — Missing Commands & Compatibility
 
-- [ ] WAIT command
-- [ ] HELLO command (RESP3 negotiation stub)
 - [ ] ACL commands (basic user/password management)
 - [ ] BITFIELD command
 - [ ] BLMOVE, BZPOPMIN, BZPOPMAX
 - [ ] Consumer groups: XGROUP CREATE, XREADGROUP, XACK, XPENDING
+- [ ] SORT BY pattern dereferencing
 - [ ] RDB/AOF serialization for Stream, HyperLogLog, and Geo types
-- [ ] Run against Redis TCL test suite in external mode
+- [ ] Improve Redis TCL test suite pass rate (>30%)
 
 ## Phase 17 — Production Hardening
 

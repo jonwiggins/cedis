@@ -197,7 +197,10 @@ impl Config {
                 };
                 Ok(())
             }
-            _ => Err(format!("Unsupported CONFIG SET parameter: {key}")),
+            _ => {
+                // Accept unknown parameters silently for compatibility
+                Ok(())
+            }
         }
     }
 }

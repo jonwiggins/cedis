@@ -393,6 +393,359 @@ pub async fn cmd_geosearch(args: &[RespValue], store: &SharedStore, client: &Cli
     RespValue::array(resp)
 }
 
+/// GEORADIUS key longitude latitude radius m|km|ft|mi [WITHCOORD] [WITHDIST] [COUNT count] [ASC|DESC] [STORE key] [STOREDIST key]
+pub async fn cmd_georadius(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    if args.len() < 5 {
+        return wrong_arg_count("georadius");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    // Check type first - return WRONGTYPE if key exists but is wrong type
+    {
+        let mut s = store.write().await;
+        let db = s.db(client.db_index);
+        if let Some(entry) = db.get(&key) {
+            if !matches!(&entry.value, RedisValue::Geo(_)) {
+                return wrong_type_error();
+            }
+        }
+    }
+
+    let lon = match arg_to_f64(&args[1]) {
+        Some(v) => v,
+        None => return RespValue::error("ERR value is not a valid float"),
+    };
+    let lat = match arg_to_f64(&args[2]) {
+        Some(v) => v,
+        None => return RespValue::error("ERR value is not a valid float"),
+    };
+    let radius = match arg_to_f64(&args[3]) {
+        Some(v) => v,
+        None => return RespValue::error("ERR value is not a valid float"),
+    };
+    let unit_str = match arg_to_string(&args[4]) {
+        Some(s) => s,
+        None => return RespValue::error("ERR unsupported unit provided"),
+    };
+    let factor = match unit_to_meters(&unit_str) {
+        Some(f) => f,
+        None => return RespValue::error("ERR unsupported unit provided"),
+    };
+
+    let mut withcoord = false;
+    let mut withdist = false;
+    let mut ascending = true;
+    let mut count: Option<usize> = None;
+    let mut i = 5;
+    while i < args.len() {
+        let opt = match arg_to_string(&args[i]) {
+            Some(s) => s.to_uppercase(),
+            None => { i += 1; continue; }
+        };
+        match opt.as_str() {
+            "WITHCOORD" => { withcoord = true; i += 1; }
+            "WITHDIST" => { withdist = true; i += 1; }
+            "ASC" => { ascending = true; i += 1; }
+            "DESC" => { ascending = false; i += 1; }
+            "COUNT" => {
+                i += 1;
+                count = args.get(i).and_then(arg_to_i64).map(|n| n.max(0) as usize);
+                i += 1;
+            }
+            "STORE" | "STOREDIST" => { i += 2; } // skip store key
+            _ => { i += 1; }
+        }
+    }
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    let results = match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::Geo(geo) => geo.search_within_radius(lon, lat, radius * factor, ascending, count),
+            _ => return wrong_type_error(),
+        },
+        None => return RespValue::array(vec![]),
+    };
+
+    let resp: Vec<RespValue> = results.iter().map(|r| {
+        if withcoord || withdist {
+            let mut items = vec![RespValue::bulk_string(r.member.clone())];
+            if withdist {
+                items.push(RespValue::bulk_string(format!("{:.4}", r.distance / factor).into_bytes()));
+            }
+            if withcoord {
+                items.push(RespValue::array(vec![
+                    RespValue::bulk_string(format!("{}", r.longitude).into_bytes()),
+                    RespValue::bulk_string(format!("{}", r.latitude).into_bytes()),
+                ]));
+            }
+            RespValue::array(items)
+        } else {
+            RespValue::bulk_string(r.member.clone())
+        }
+    }).collect();
+
+    RespValue::array(resp)
+}
+
+/// GEORADIUSBYMEMBER key member radius m|km|ft|mi [WITHCOORD] [WITHDIST] [COUNT count] [ASC|DESC]
+pub async fn cmd_georadiusbymember(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    if args.len() < 4 {
+        return wrong_arg_count("georadiusbymember");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+    let member = match arg_to_bytes(&args[1]) {
+        Some(m) => m.to_vec(),
+        None => return RespValue::error("ERR invalid member"),
+    };
+    let radius = match arg_to_f64(&args[2]) {
+        Some(v) => v,
+        None => return RespValue::error("ERR value is not a valid float"),
+    };
+    let unit_str = match arg_to_string(&args[3]) {
+        Some(s) => s,
+        None => return RespValue::error("ERR unsupported unit provided"),
+    };
+    let factor = match unit_to_meters(&unit_str) {
+        Some(f) => f,
+        None => return RespValue::error("ERR unsupported unit provided"),
+    };
+
+    let mut withcoord = false;
+    let mut withdist = false;
+    let mut ascending = true;
+    let mut count: Option<usize> = None;
+    let mut i = 4;
+    while i < args.len() {
+        let opt = match arg_to_string(&args[i]) {
+            Some(s) => s.to_uppercase(),
+            None => { i += 1; continue; }
+        };
+        match opt.as_str() {
+            "WITHCOORD" => { withcoord = true; i += 1; }
+            "WITHDIST" => { withdist = true; i += 1; }
+            "ASC" => { ascending = true; i += 1; }
+            "DESC" => { ascending = false; i += 1; }
+            "COUNT" => {
+                i += 1;
+                count = args.get(i).and_then(arg_to_i64).map(|n| n.max(0) as usize);
+                i += 1;
+            }
+            _ => { i += 1; }
+        }
+    }
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    // Resolve member position
+    let (lon, lat) = match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::Geo(geo) => match geo.pos(&member) {
+                Some(pos) => pos,
+                None => return RespValue::array(vec![]),
+            },
+            _ => return wrong_type_error(),
+        },
+        None => return RespValue::array(vec![]),
+    };
+
+    let results = match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::Geo(geo) => geo.search_within_radius(lon, lat, radius * factor, ascending, count),
+            _ => return wrong_type_error(),
+        },
+        None => return RespValue::array(vec![]),
+    };
+
+    let resp: Vec<RespValue> = results.iter().map(|r| {
+        if withcoord || withdist {
+            let mut items = vec![RespValue::bulk_string(r.member.clone())];
+            if withdist {
+                items.push(RespValue::bulk_string(format!("{:.4}", r.distance / factor).into_bytes()));
+            }
+            if withcoord {
+                items.push(RespValue::array(vec![
+                    RespValue::bulk_string(format!("{}", r.longitude).into_bytes()),
+                    RespValue::bulk_string(format!("{}", r.latitude).into_bytes()),
+                ]));
+            }
+            RespValue::array(items)
+        } else {
+            RespValue::bulk_string(r.member.clone())
+        }
+    }).collect();
+
+    RespValue::array(resp)
+}
+
+/// GEOSEARCHSTORE destination source [FROMMEMBER member|FROMLONLAT lon lat] [BYRADIUS radius m|km|ft|mi|BYBOX width height m|km|ft|mi] [ASC|DESC] [COUNT count]
+pub async fn cmd_geosearchstore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    if args.len() < 5 {
+        return wrong_arg_count("geosearchstore");
+    }
+    let dest_key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    // Check if source key is wrong type first
+    let source_key = match arg_to_string(&args[1]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    {
+        let mut s = store.write().await;
+        let db = s.db(client.db_index);
+        if let Some(entry) = db.get(&source_key) {
+            if !matches!(&entry.value, RedisValue::Geo(_)) {
+                return wrong_type_error();
+            }
+        }
+    }
+
+    // Reuse geosearch logic on the remaining args
+    let search_args: Vec<RespValue> = std::iter::once(args[1].clone())
+        .chain(args[2..].iter().cloned())
+        .collect();
+
+    // Parse like geosearch but then store results
+    let search_result = cmd_geosearch(&search_args, store, client).await;
+
+    // Count results and store in destination
+    match search_result {
+        RespValue::Array(Some(ref items)) => {
+            let count = items.len() as i64;
+            // Create a new geo set at destination with the found members
+            let mut s = store.write().await;
+            let db = s.db(client.db_index);
+
+            // Get source geo data
+            let members_to_copy: Vec<(Vec<u8>, f64, f64)> = match db.get(&source_key) {
+                Some(entry) => match &entry.value {
+                    RedisValue::Geo(geo) => {
+                        items.iter().filter_map(|item| {
+                            let member_name = match item {
+                                RespValue::BulkString(Some(data)) => data.clone(),
+                                RespValue::Array(Some(inner)) => {
+                                    if let Some(RespValue::BulkString(Some(data))) = inner.first() {
+                                        data.clone()
+                                    } else {
+                                        return None;
+                                    }
+                                }
+                                _ => return None,
+                            };
+                            geo.pos(&member_name).map(|(lon, lat)| (member_name, lon, lat))
+                        }).collect()
+                    }
+                    _ => return wrong_type_error(),
+                },
+                None => vec![],
+            };
+
+            let mut new_geo = GeoSet::new();
+            for (member, lon, lat) in &members_to_copy {
+                new_geo.add(member.clone(), *lon, *lat);
+            }
+            db.set(dest_key, Entry::new(RedisValue::Geo(new_geo)));
+
+            RespValue::integer(count)
+        }
+        _ => RespValue::integer(0),
+    }
+}
+
+/// GEOHASH key member [member ...] — return Geohash strings (stub returning empty strings)
+pub async fn cmd_geohash(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    if args.len() < 2 {
+        return wrong_arg_count("geohash");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::array(vec![]),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::Geo(geo) => {
+                let results: Vec<RespValue> = args[1..].iter().map(|arg| {
+                    if let Some(member) = arg_to_bytes(arg) {
+                        if let Some((lon, lat)) = geo.pos(member) {
+                            // Simple geohash encoding (11-char base32)
+                            let hash = encode_geohash(lon, lat, 11);
+                            RespValue::bulk_string(hash.into_bytes())
+                        } else {
+                            RespValue::null_bulk_string()
+                        }
+                    } else {
+                        RespValue::null_bulk_string()
+                    }
+                }).collect();
+                RespValue::array(results)
+            }
+            _ => wrong_type_error(),
+        },
+        None => {
+            let nulls: Vec<RespValue> = args[1..].iter().map(|_| RespValue::null_bulk_string()).collect();
+            RespValue::array(nulls)
+        }
+    }
+}
+
+fn encode_geohash(lon: f64, lat: f64, precision: usize) -> String {
+    const BASE32: &[u8] = b"0123456789bcdefghjkmnpqrstuvwxyz";
+    let mut min_lon = -180.0_f64;
+    let mut max_lon = 180.0_f64;
+    let mut min_lat = -90.0_f64;
+    let mut max_lat = 90.0_f64;
+    let mut hash = String::with_capacity(precision);
+    let mut bits = 0u8;
+    let mut bit_count = 0u8;
+    let mut even_bit = true;
+
+    while hash.len() < precision {
+        if even_bit {
+            let mid = (min_lon + max_lon) / 2.0;
+            if lon >= mid {
+                bits = (bits << 1) | 1;
+                min_lon = mid;
+            } else {
+                bits <<= 1;
+                max_lon = mid;
+            }
+        } else {
+            let mid = (min_lat + max_lat) / 2.0;
+            if lat >= mid {
+                bits = (bits << 1) | 1;
+                min_lat = mid;
+            } else {
+                bits <<= 1;
+                max_lat = mid;
+            }
+        }
+        even_bit = !even_bit;
+        bit_count += 1;
+        if bit_count == 5 {
+            hash.push(BASE32[bits as usize] as char);
+            bits = 0;
+            bit_count = 0;
+        }
+    }
+    hash
+}
+
 /// GEOMEMBERS key — return all members in the geo set (non-standard, utility command).
 pub async fn cmd_geomembers(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
