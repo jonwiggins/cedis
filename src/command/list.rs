@@ -1,0 +1,600 @@
+use crate::command::{arg_to_bytes, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error};
+use crate::connection::ClientState;
+use crate::resp::RespValue;
+use crate::store::SharedStore;
+use crate::store::entry::Entry;
+use crate::types::RedisValue;
+use crate::types::list::RedisList;
+
+fn get_or_create_list<'a>(
+    db: &'a mut crate::store::Database,
+    key: &str,
+) -> Result<&'a mut RedisList, RespValue> {
+    if !db.exists(key) {
+        let list = RedisList::new();
+        db.set(key.to_string(), Entry::new(RedisValue::List(list)));
+    }
+    match db.get_mut(key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(l) => Ok(l),
+            _ => Err(wrong_type_error()),
+        },
+        None => unreachable!(),
+    }
+}
+
+pub async fn cmd_lpush(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() < 2 {
+        return wrong_arg_count("lpush");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    let list = match get_or_create_list(db, &key) {
+        Ok(l) => l,
+        Err(e) => return e,
+    };
+
+    for arg in &args[1..] {
+        if let Some(value) = arg_to_bytes(arg) {
+            list.lpush(value.to_vec());
+        }
+    }
+
+    RespValue::integer(list.len() as i64)
+}
+
+pub async fn cmd_rpush(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() < 2 {
+        return wrong_arg_count("rpush");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    let list = match get_or_create_list(db, &key) {
+        Ok(l) => l,
+        Err(e) => return e,
+    };
+
+    for arg in &args[1..] {
+        if let Some(value) = arg_to_bytes(arg) {
+            list.rpush(value.to_vec());
+        }
+    }
+
+    RespValue::integer(list.len() as i64)
+}
+
+pub async fn cmd_lpop(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.is_empty() || args.len() > 2 {
+        return wrong_arg_count("lpop");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let count = if args.len() == 2 {
+        match arg_to_i64(&args[1]) {
+            Some(n) if n >= 0 => Some(n as usize),
+            _ => return RespValue::error("ERR value is not an integer or out of range"),
+        }
+    } else {
+        None
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => {
+                if let Some(count) = count {
+                    let mut results = Vec::new();
+                    for _ in 0..count {
+                        match list.lpop() {
+                            Some(v) => results.push(RespValue::bulk_string(v)),
+                            None => break,
+                        }
+                    }
+                    if results.is_empty() {
+                        RespValue::array(vec![])
+                    } else {
+                        RespValue::array(results)
+                    }
+                } else {
+                    match list.lpop() {
+                        Some(v) => RespValue::bulk_string(v),
+                        None => RespValue::null_bulk_string(),
+                    }
+                }
+            }
+            _ => wrong_type_error(),
+        },
+        None => {
+            if count.is_some() {
+                RespValue::null_array()
+            } else {
+                RespValue::null_bulk_string()
+            }
+        }
+    }
+}
+
+pub async fn cmd_rpop(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.is_empty() || args.len() > 2 {
+        return wrong_arg_count("rpop");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let count = if args.len() == 2 {
+        match arg_to_i64(&args[1]) {
+            Some(n) if n >= 0 => Some(n as usize),
+            _ => return RespValue::error("ERR value is not an integer or out of range"),
+        }
+    } else {
+        None
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => {
+                if let Some(count) = count {
+                    let mut results = Vec::new();
+                    for _ in 0..count {
+                        match list.rpop() {
+                            Some(v) => results.push(RespValue::bulk_string(v)),
+                            None => break,
+                        }
+                    }
+                    if results.is_empty() {
+                        RespValue::array(vec![])
+                    } else {
+                        RespValue::array(results)
+                    }
+                } else {
+                    match list.rpop() {
+                        Some(v) => RespValue::bulk_string(v),
+                        None => RespValue::null_bulk_string(),
+                    }
+                }
+            }
+            _ => wrong_type_error(),
+        },
+        None => {
+            if count.is_some() {
+                RespValue::null_array()
+            } else {
+                RespValue::null_bulk_string()
+            }
+        }
+    }
+}
+
+pub async fn cmd_llen(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 1 {
+        return wrong_arg_count("llen");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::integer(0),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::List(list) => RespValue::integer(list.len() as i64),
+            _ => wrong_type_error(),
+        },
+        None => RespValue::integer(0),
+    }
+}
+
+pub async fn cmd_lrange(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 3 {
+        return wrong_arg_count("lrange");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::array(vec![]),
+    };
+    let start = match arg_to_i64(&args[1]) {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+    let stop = match arg_to_i64(&args[2]) {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::List(list) => {
+                let items = list.lrange(start, stop);
+                let resp: Vec<RespValue> = items
+                    .into_iter()
+                    .map(|v| RespValue::bulk_string(v.clone()))
+                    .collect();
+                RespValue::array(resp)
+            }
+            _ => wrong_type_error(),
+        },
+        None => RespValue::array(vec![]),
+    }
+}
+
+pub async fn cmd_lindex(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 2 {
+        return wrong_arg_count("lindex");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+    let index = match arg_to_i64(&args[1]) {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::List(list) => match list.lindex(index) {
+                Some(v) => RespValue::bulk_string(v.clone()),
+                None => RespValue::null_bulk_string(),
+            },
+            _ => wrong_type_error(),
+        },
+        None => RespValue::null_bulk_string(),
+    }
+}
+
+pub async fn cmd_lset(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 3 {
+        return wrong_arg_count("lset");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR no such key"),
+    };
+    let index = match arg_to_i64(&args[1]) {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+    let value = match arg_to_bytes(&args[2]) {
+        Some(v) => v.to_vec(),
+        None => return RespValue::error("ERR invalid value"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => {
+                if list.lset(index, value) {
+                    RespValue::ok()
+                } else {
+                    RespValue::error("ERR index out of range")
+                }
+            }
+            _ => wrong_type_error(),
+        },
+        None => RespValue::error("ERR no such key"),
+    }
+}
+
+pub async fn cmd_linsert(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 4 {
+        return wrong_arg_count("linsert");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::integer(0),
+    };
+    let position = match arg_to_string(&args[1]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR syntax error"),
+    };
+    let pivot = match arg_to_bytes(&args[2]) {
+        Some(v) => v.to_vec(),
+        None => return RespValue::error("ERR invalid pivot"),
+    };
+    let value = match arg_to_bytes(&args[3]) {
+        Some(v) => v.to_vec(),
+        None => return RespValue::error("ERR invalid value"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => {
+                let result = match position.as_str() {
+                    "BEFORE" => list.linsert_before(&pivot, value),
+                    "AFTER" => list.linsert_after(&pivot, value),
+                    _ => return RespValue::error("ERR syntax error"),
+                };
+                match result {
+                    Some(len) => RespValue::integer(len as i64),
+                    None => RespValue::integer(-1),
+                }
+            }
+            _ => wrong_type_error(),
+        },
+        None => RespValue::integer(0),
+    }
+}
+
+pub async fn cmd_lrem(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 3 {
+        return wrong_arg_count("lrem");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::integer(0),
+    };
+    let count = match arg_to_i64(&args[1]) {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+    let value = match arg_to_bytes(&args[2]) {
+        Some(v) => v.to_vec(),
+        None => return RespValue::integer(0),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => RespValue::integer(list.lrem(count, &value)),
+            _ => wrong_type_error(),
+        },
+        None => RespValue::integer(0),
+    }
+}
+
+pub async fn cmd_ltrim(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 3 {
+        return wrong_arg_count("ltrim");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::ok(),
+    };
+    let start = match arg_to_i64(&args[1]) {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+    let stop = match arg_to_i64(&args[2]) {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => {
+                list.ltrim(start, stop);
+                RespValue::ok()
+            }
+            _ => wrong_type_error(),
+        },
+        None => RespValue::ok(),
+    }
+}
+
+pub async fn cmd_rpoplpush(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 2 {
+        return wrong_arg_count("rpoplpush");
+    }
+    let src = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+    let dst = match arg_to_string(&args[1]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    // Pop from source
+    let value = match db.get_mut(&src) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => list.rpop(),
+            _ => return wrong_type_error(),
+        },
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let value = match value {
+        Some(v) => v,
+        None => return RespValue::null_bulk_string(),
+    };
+
+    // Push to destination
+    let list = match get_or_create_list(db, &dst) {
+        Ok(l) => l,
+        Err(e) => return e,
+    };
+    list.lpush(value.clone());
+
+    // Clean up empty source
+    if let Some(entry) = db.get(&src) {
+        if let RedisValue::List(list) = &entry.value {
+            if list.is_empty() {
+                db.del(&src);
+            }
+        }
+    }
+
+    RespValue::bulk_string(value)
+}
+
+pub async fn cmd_lmove(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 4 {
+        return wrong_arg_count("lmove");
+    }
+    let src = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+    let dst = match arg_to_string(&args[1]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+    let wherefrom = match arg_to_string(&args[2]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR syntax error"),
+    };
+    let whereto = match arg_to_string(&args[3]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR syntax error"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    let value = match db.get_mut(&src) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => match wherefrom.as_str() {
+                "LEFT" => list.lpop(),
+                "RIGHT" => list.rpop(),
+                _ => return RespValue::error("ERR syntax error"),
+            },
+            _ => return wrong_type_error(),
+        },
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let value = match value {
+        Some(v) => v,
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let list = match get_or_create_list(db, &dst) {
+        Ok(l) => l,
+        Err(e) => return e,
+    };
+
+    match whereto.as_str() {
+        "LEFT" => list.lpush(value.clone()),
+        "RIGHT" => list.rpush(value.clone()),
+        _ => return RespValue::error("ERR syntax error"),
+    }
+
+    RespValue::bulk_string(value)
+}
+
+pub async fn cmd_lpos(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() < 2 {
+        return wrong_arg_count("lpos");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+    let element = match arg_to_bytes(&args[1]) {
+        Some(v) => v.to_vec(),
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::List(list) => match list.lpos(&element) {
+                Some(pos) => RespValue::integer(pos as i64),
+                None => RespValue::null_bulk_string(),
+            },
+            _ => wrong_type_error(),
+        },
+        None => RespValue::null_bulk_string(),
+    }
+}
