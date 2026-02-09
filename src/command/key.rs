@@ -2,7 +2,7 @@ use crate::command::{arg_to_i64, arg_to_string, wrong_arg_count};
 use crate::connection::ClientState;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
-use crate::store::entry::now_millis;
+use crate::store::entry::{Entry, now_millis};
 
 pub async fn cmd_del(
     args: &[RespValue],
@@ -425,16 +425,27 @@ pub async fn cmd_object(
                         crate::types::RedisValue::String(s) => {
                             if s.as_i64().is_some() {
                                 "int"
-                            } else {
+                            } else if s.len() <= 44 {
                                 "embstr"
+                            } else {
+                                "raw"
                             }
                         }
-                        crate::types::RedisValue::List(_) => "listpack",
-                        crate::types::RedisValue::Hash(_) => "listpack",
-                        crate::types::RedisValue::Set(_) => "listpack",
-                        crate::types::RedisValue::SortedSet(_) => "listpack",
+                        crate::types::RedisValue::List(l) => {
+                            if l.len() <= 128 { "listpack" } else { "quicklist" }
+                        }
+                        crate::types::RedisValue::Hash(h) => {
+                            if h.len() <= 128 { "listpack" } else { "hashtable" }
+                        }
+                        crate::types::RedisValue::Set(s) => {
+                            if s.len() <= 128 { "listpack" } else { "hashtable" }
+                        }
+                        crate::types::RedisValue::SortedSet(z) => {
+                            if z.len() <= 128 { "listpack" } else { "skiplist" }
+                        }
                         crate::types::RedisValue::Stream(_) => "stream",
                         crate::types::RedisValue::HyperLogLog(_) => "raw",
+                        crate::types::RedisValue::Geo(_) => "skiplist",
                     };
                     RespValue::bulk_string(encoding.as_bytes().to_vec())
                 }
@@ -463,12 +474,35 @@ pub async fn cmd_object(
             }
             RespValue::integer(0)
         }
+        "FREQ" => {
+            if args.len() != 2 {
+                return wrong_arg_count("object|freq");
+            }
+            let key = match arg_to_string(&args[1]) {
+                Some(k) => k,
+                None => return RespValue::null_bulk_string(),
+            };
+            let mut store = store.write().await;
+            let db = store.db(client.db_index);
+            if db.exists(&key) {
+                RespValue::integer(0)
+            } else {
+                RespValue::null_bulk_string()
+            }
+        }
         "HELP" => {
             let help = vec![
-                RespValue::bulk_string(b"OBJECT ENCODING <key>".to_vec()),
-                RespValue::bulk_string(b"OBJECT REFCOUNT <key>".to_vec()),
-                RespValue::bulk_string(b"OBJECT IDLETIME <key>".to_vec()),
-                RespValue::bulk_string(b"OBJECT HELP".to_vec()),
+                RespValue::bulk_string(b"OBJECT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:".to_vec()),
+                RespValue::bulk_string(b"ENCODING <key>".to_vec()),
+                RespValue::bulk_string(b"    Return the kind of internal representation the Redis object stored at <key> is using.".to_vec()),
+                RespValue::bulk_string(b"FREQ <key>".to_vec()),
+                RespValue::bulk_string(b"    Return the logarithmic access frequency counter of a Redis object stored at <key>.".to_vec()),
+                RespValue::bulk_string(b"HELP".to_vec()),
+                RespValue::bulk_string(b"    Return subcommand help summary.".to_vec()),
+                RespValue::bulk_string(b"IDLETIME <key>".to_vec()),
+                RespValue::bulk_string(b"    Return the idle time of a Redis object stored at <key>.".to_vec()),
+                RespValue::bulk_string(b"REFCOUNT <key>".to_vec()),
+                RespValue::bulk_string(b"    Return the reference count of the object stored at <key>.".to_vec()),
             ];
             RespValue::array(help)
         }
@@ -597,7 +631,7 @@ pub async fn cmd_sort(
         }
         db.set(
             dest,
-            crate::store::entry::Entry::new(crate::types::RedisValue::List(list)),
+            Entry::new(crate::types::RedisValue::List(list)),
         );
         RespValue::integer(len)
     } else {
@@ -607,4 +641,85 @@ pub async fn cmd_sort(
             .collect();
         RespValue::array(items)
     }
+}
+
+pub async fn cmd_copy(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    // COPY source destination [DB destination-db] [REPLACE]
+    if args.len() < 2 {
+        return wrong_arg_count("copy");
+    }
+
+    let source = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::integer(0),
+    };
+    let destination = match arg_to_string(&args[1]) {
+        Some(k) => k,
+        None => return RespValue::integer(0),
+    };
+
+    let mut dest_db: Option<usize> = None;
+    let mut replace = false;
+    let mut i = 2;
+    while i < args.len() {
+        let opt = match arg_to_string(&args[i]) {
+            Some(s) => s.to_uppercase(),
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+        match opt.as_str() {
+            "DB" => {
+                i += 1;
+                if i < args.len() {
+                    match arg_to_i64(&args[i]) {
+                        Some(n) if n >= 0 => dest_db = Some(n as usize),
+                        _ => return RespValue::error("ERR value is not an integer or out of range"),
+                    }
+                } else {
+                    return RespValue::error("ERR syntax error");
+                }
+            }
+            "REPLACE" => replace = true,
+            _ => return RespValue::error("ERR syntax error"),
+        }
+        i += 1;
+    }
+
+    let dest_db_index = dest_db.unwrap_or(client.db_index);
+
+    let mut store = store.write().await;
+
+    // Validate destination db index
+    if dest_db_index >= store.databases.len() {
+        return RespValue::error("ERR invalid DB index");
+    }
+
+    // Read the source entry from the source db
+    let src_db = &mut store.databases[client.db_index];
+
+    // Check if source exists (with lazy expiration)
+    let source_entry = match src_db.get(&source) {
+        Some(entry) => Entry {
+            value: entry.value.clone(),
+            expires_at: entry.expires_at,
+        },
+        None => return RespValue::integer(0),
+    };
+
+    // Now operate on the destination db
+    let dst_db = &mut store.databases[dest_db_index];
+
+    // Check if destination exists
+    if dst_db.exists(&destination) && !replace {
+        return RespValue::integer(0);
+    }
+
+    dst_db.set(destination, source_entry);
+    RespValue::integer(1)
 }

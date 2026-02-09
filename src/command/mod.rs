@@ -6,16 +6,19 @@ pub mod sorted_set;
 pub mod stream;
 pub mod bitmap;
 pub mod hyperloglog;
+pub mod geo;
 pub mod key;
 pub mod server_cmd;
 pub mod pubsub;
 pub mod transaction;
+pub mod scripting;
 
 use crate::config::SharedConfig;
 use crate::connection::ClientState;
 use crate::keywatcher::SharedKeyWatcher;
 use crate::pubsub::SharedPubSub;
 use crate::resp::RespValue;
+use crate::scripting::ScriptCache;
 use crate::store::SharedStore;
 use tokio::sync::mpsc;
 
@@ -29,6 +32,7 @@ pub async fn dispatch(
     pubsub: &SharedPubSub,
     pubsub_tx: &mpsc::UnboundedSender<RespValue>,
     key_watcher: &SharedKeyWatcher,
+    script_cache: &ScriptCache,
 ) -> RespValue {
     // If in MULTI mode and this isn't EXEC/DISCARD/MULTI, queue the command
     if client.in_multi && !matches!(cmd_name, "EXEC" | "DISCARD" | "MULTI") {
@@ -99,6 +103,7 @@ pub async fn dispatch(
         "DUMP" => key::cmd_dump(args),
         "RESTORE" => key::cmd_restore(args),
         "SORT" => key::cmd_sort(args, store, client).await,
+        "COPY" => key::cmd_copy(args, store, client).await,
 
         // Lists
         "LPUSH" => list::cmd_lpush(args, store, client, key_watcher).await,
@@ -199,9 +204,16 @@ pub async fn dispatch(
         "PFCOUNT" => hyperloglog::cmd_pfcount(args, store, client).await,
         "PFMERGE" => hyperloglog::cmd_pfmerge(args, store, client).await,
 
+        // Geo
+        "GEOADD" => geo::cmd_geoadd(args, store, client).await,
+        "GEODIST" => geo::cmd_geodist(args, store, client).await,
+        "GEOPOS" => geo::cmd_geopos(args, store, client).await,
+        "GEOSEARCH" => geo::cmd_geosearch(args, store, client).await,
+        "GEOMEMBERS" => geo::cmd_geomembers(args, store, client).await,
+
         // Transactions
         "MULTI" => transaction::cmd_multi(client),
-        "EXEC" => transaction::cmd_exec(store, config, client, pubsub, pubsub_tx, key_watcher).await,
+        "EXEC" => transaction::cmd_exec(store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await,
         "DISCARD" => transaction::cmd_discard(client),
         "WATCH" => transaction::cmd_watch(args, store, client).await,
         "UNWATCH" => transaction::cmd_unwatch(client),
@@ -219,6 +231,11 @@ pub async fn dispatch(
         "BGSAVE" => server_cmd::cmd_bgsave(store, config).await,
         "BGREWRITEAOF" => server_cmd::cmd_bgrewriteaof(store, config).await,
         "LASTSAVE" => server_cmd::cmd_lastsave(),
+
+        // Scripting
+        "EVAL" => scripting::cmd_eval(args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await,
+        "EVALSHA" => scripting::cmd_evalsha(args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await,
+        "SCRIPT" => scripting::cmd_script(args, script_cache).await,
 
         _ => {
             let args_preview: Vec<String> = args

@@ -1841,3 +1841,325 @@ async fn test_xread() {
     .await
     .unwrap();
 }
+
+// =========== Geo commands tests ===========
+
+#[tokio::test]
+async fn test_geoadd_geopos() {
+    let port = 16444;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // GEOADD
+        let added: i64 = redis::cmd("GEOADD")
+            .arg("places")
+            .arg("13.361389")
+            .arg("38.115556")
+            .arg("Palermo")
+            .arg("15.087269")
+            .arg("37.502669")
+            .arg("Catania")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(added, 2);
+
+        // GEOPOS
+        let result: Vec<redis::Value> = redis::cmd("GEOPOS")
+            .arg("places")
+            .arg("Palermo")
+            .arg("Catania")
+            .arg("nonexisting")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        // First two should be arrays (coordinates), third should be nil
+        match &result[2] {
+            redis::Value::Nil => {}
+            _ => panic!("Expected nil for nonexisting member"),
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_geodist() {
+    let port = 16445;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: i64 = redis::cmd("GEOADD")
+            .arg("places")
+            .arg("13.361389")
+            .arg("38.115556")
+            .arg("Palermo")
+            .arg("15.087269")
+            .arg("37.502669")
+            .arg("Catania")
+            .query(&mut conn)
+            .unwrap();
+
+        // GEODIST in meters
+        let dist: String = redis::cmd("GEODIST")
+            .arg("places")
+            .arg("Palermo")
+            .arg("Catania")
+            .arg("m")
+            .query(&mut conn)
+            .unwrap();
+        let d: f64 = dist.parse().unwrap();
+        // Expected ~166 km = ~166000 m (approximate)
+        assert!(d > 100000.0 && d < 200000.0, "Distance was {d}");
+
+        // GEODIST in km
+        let dist_km: String = redis::cmd("GEODIST")
+            .arg("places")
+            .arg("Palermo")
+            .arg("Catania")
+            .arg("km")
+            .query(&mut conn)
+            .unwrap();
+        let dk: f64 = dist_km.parse().unwrap();
+        assert!(dk > 100.0 && dk < 200.0, "Distance km was {dk}");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_geosearch() {
+    let port = 16446;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let _: i64 = redis::cmd("GEOADD")
+            .arg("places")
+            .arg("13.361389")
+            .arg("38.115556")
+            .arg("Palermo")
+            .arg("15.087269")
+            .arg("37.502669")
+            .arg("Catania")
+            .arg("2.349014")
+            .arg("48.864716")
+            .arg("Paris")
+            .query(&mut conn)
+            .unwrap();
+
+        // GEOSEARCH by radius from coordinates
+        let result: Vec<redis::Value> = redis::cmd("GEOSEARCH")
+            .arg("places")
+            .arg("FROMLONLAT")
+            .arg("15.0")
+            .arg("37.0")
+            .arg("BYRADIUS")
+            .arg("200")
+            .arg("km")
+            .arg("ASC")
+            .query(&mut conn)
+            .unwrap();
+
+        // Should find Catania and Palermo but not Paris
+        assert!(result.len() >= 1 && result.len() <= 2, "Got {} results", result.len());
+    })
+    .await
+    .unwrap();
+}
+
+// =========== COPY command test ===========
+
+#[tokio::test]
+async fn test_copy_command() {
+    let port = 16447;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Set a value
+        let _: () = redis::cmd("SET").arg("src").arg("hello").query(&mut conn).unwrap();
+
+        // COPY src to dst
+        let result: i64 = redis::cmd("COPY").arg("src").arg("dst").query(&mut conn).unwrap();
+        assert_eq!(result, 1);
+
+        // Verify both exist
+        let v1: String = redis::cmd("GET").arg("src").query(&mut conn).unwrap();
+        let v2: String = redis::cmd("GET").arg("dst").query(&mut conn).unwrap();
+        assert_eq!(v1, "hello");
+        assert_eq!(v2, "hello");
+
+        // COPY without REPLACE should fail if dest exists
+        let result: i64 = redis::cmd("COPY").arg("src").arg("dst").query(&mut conn).unwrap();
+        assert_eq!(result, 0);
+
+        // COPY with REPLACE should succeed
+        let _: () = redis::cmd("SET").arg("src").arg("world").query(&mut conn).unwrap();
+        let result: i64 = redis::cmd("COPY")
+            .arg("src")
+            .arg("dst")
+            .arg("REPLACE")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result, 1);
+        let v: String = redis::cmd("GET").arg("dst").query(&mut conn).unwrap();
+        assert_eq!(v, "world");
+    })
+    .await
+    .unwrap();
+}
+
+// =========== Lua scripting tests ===========
+
+#[tokio::test]
+async fn test_eval_basic() {
+    let port = 16448;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Simple return value
+        let result: i64 = redis::cmd("EVAL")
+            .arg("return 42")
+            .arg("0")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result, 42);
+
+        // Return a string
+        let result: String = redis::cmd("EVAL")
+            .arg("return 'hello'")
+            .arg("0")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result, "hello");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_eval_redis_call() {
+    let port = 16449;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // SET and GET via redis.call()
+        let result: String = redis::cmd("EVAL")
+            .arg("redis.call('SET', KEYS[1], ARGV[1]) return redis.call('GET', KEYS[1])")
+            .arg("1")
+            .arg("mykey")
+            .arg("myvalue")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result, "myvalue");
+
+        // Verify the key was actually set
+        let v: String = redis::cmd("GET").arg("mykey").query(&mut conn).unwrap();
+        assert_eq!(v, "myvalue");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_evalsha_and_script() {
+    let port = 16450;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let script = "return redis.call('SET', KEYS[1], ARGV[1])";
+
+        // SCRIPT LOAD
+        let sha: String = redis::cmd("SCRIPT")
+            .arg("LOAD")
+            .arg(script)
+            .query(&mut conn)
+            .unwrap();
+        assert!(!sha.is_empty());
+
+        // SCRIPT EXISTS
+        let exists: Vec<i64> = redis::cmd("SCRIPT")
+            .arg("EXISTS")
+            .arg(&sha)
+            .arg("nonexistent")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(exists, vec![1, 0]);
+
+        // EVALSHA
+        let _: String = redis::cmd("EVALSHA")
+            .arg(&sha)
+            .arg("1")
+            .arg("scriptkey")
+            .arg("scriptval")
+            .query(&mut conn)
+            .unwrap();
+
+        let v: String = redis::cmd("GET").arg("scriptkey").query(&mut conn).unwrap();
+        assert_eq!(v, "scriptval");
+
+        // SCRIPT FLUSH
+        let _: String = redis::cmd("SCRIPT")
+            .arg("FLUSH")
+            .query(&mut conn)
+            .unwrap();
+
+        // EVALSHA should now fail
+        let result: redis::RedisResult<String> = redis::cmd("EVALSHA")
+            .arg(&sha)
+            .arg("0")
+            .query(&mut conn);
+        assert!(result.is_err());
+    })
+    .await
+    .unwrap();
+}
+
+// =========== OBJECT ENCODING test ===========
+
+#[tokio::test]
+async fn test_object_encoding() {
+    let port = 16451;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Integer string
+        let _: () = redis::cmd("SET").arg("num").arg("123").query(&mut conn).unwrap();
+        let enc: String = redis::cmd("OBJECT").arg("ENCODING").arg("num").query(&mut conn).unwrap();
+        assert_eq!(enc, "int");
+
+        // Short string
+        let _: () = redis::cmd("SET").arg("str").arg("hello").query(&mut conn).unwrap();
+        let enc: String = redis::cmd("OBJECT").arg("ENCODING").arg("str").query(&mut conn).unwrap();
+        assert_eq!(enc, "embstr");
+
+        // List
+        let _: i64 = redis::cmd("RPUSH").arg("list").arg("a").query(&mut conn).unwrap();
+        let enc: String = redis::cmd("OBJECT").arg("ENCODING").arg("list").query(&mut conn).unwrap();
+        assert_eq!(enc, "listpack");
+    })
+    .await
+    .unwrap();
+}

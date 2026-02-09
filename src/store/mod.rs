@@ -245,6 +245,9 @@ impl Database {
                     // HyperLogLog uses a fixed 12KB register set
                     12304
                 }
+                RedisValue::Geo(g) => {
+                    g.estimated_memory()
+                }
             };
         }
         total

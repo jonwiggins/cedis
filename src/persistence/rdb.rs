@@ -103,6 +103,9 @@ pub fn save(store: &DataStore, path: &str) -> io::Result<()> {
                 RedisValue::HyperLogLog(_) => {
                     // HyperLogLog RDB serialization not yet implemented; skip
                 }
+                RedisValue::Geo(_) => {
+                    // Geo RDB serialization not yet implemented; skip
+                }
             }
         }
     }

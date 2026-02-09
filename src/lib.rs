@@ -16,6 +16,7 @@ pub mod keywatcher;
 pub mod persistence;
 pub mod pubsub;
 pub mod resp;
+pub mod scripting;
 pub mod server;
 pub mod store;
 pub mod types;

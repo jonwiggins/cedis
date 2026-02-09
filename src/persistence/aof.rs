@@ -219,6 +219,9 @@ pub fn rewrite(store: &DataStore, path: &str) -> io::Result<()> {
                 RedisValue::HyperLogLog(_) => {
                     // HyperLogLog AOF serialization not yet implemented; skip
                 }
+                RedisValue::Geo(_) => {
+                    // Geo AOF serialization not yet implemented; skip
+                }
             }
 
             // Expiry

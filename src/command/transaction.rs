@@ -3,6 +3,7 @@ use crate::connection::ClientState;
 use crate::keywatcher::SharedKeyWatcher;
 use crate::pubsub::SharedPubSub;
 use crate::resp::RespValue;
+use crate::scripting::ScriptCache;
 use crate::store::SharedStore;
 use tokio::sync::mpsc;
 
@@ -22,6 +23,7 @@ pub fn cmd_exec<'a>(
     pubsub: &'a SharedPubSub,
     pubsub_tx: &'a mpsc::UnboundedSender<RespValue>,
     key_watcher: &'a SharedKeyWatcher,
+    script_cache: &'a ScriptCache,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RespValue> + Send + 'a>> {
     Box::pin(async move {
         if !client.in_multi {
@@ -45,7 +47,7 @@ pub fn cmd_exec<'a>(
         let mut results = Vec::with_capacity(queue.len());
         for (cmd_name, args) in queue {
             let result =
-                crate::command::dispatch(&cmd_name, &args, store, config, client, pubsub, pubsub_tx, key_watcher).await;
+                crate::command::dispatch(&cmd_name, &args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await;
             results.push(result);
         }
 

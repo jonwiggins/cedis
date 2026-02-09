@@ -17,16 +17,13 @@
 - [x] Streams: XADD, XLEN, XRANGE, XREVRANGE, XREAD, XTRIM (maxlen)
 - [x] Bitmap: SETBIT, GETBIT, BITCOUNT, BITOP (AND/OR/XOR/NOT), BITPOS
 - [x] HyperLogLog: PFADD, PFCOUNT, PFMERGE
-- [x] Expanded test coverage: 112 tests (47 unit + 65 integration)
+- [x] Lua Scripting: EVAL, EVALSHA, SCRIPT LOAD/EXISTS/FLUSH, redis.call()/redis.pcall(), KEYS/ARGV
+- [x] Geo commands: GEOADD (NX/XX/CH), GEODIST, GEOPOS, GEOSEARCH (FROMLONLAT/FROMMEMBER, BYRADIUS/BYBOX, WITHCOORD/WITHDIST)
+- [x] COPY command (with DB and REPLACE options)
+- [x] OBJECT ENCODING with proper encoding detection (int/embstr/raw, listpack/quicklist/hashtable/skiplist)
+- [x] OBJECT FREQ, OBJECT HELP improvements
+- [x] Expanded test coverage: 120 tests (47 unit + 73 integration)
 - [x] Benchmark suite: 37K ops/sec single-client, 271K ops/sec pipelined
-
-## Phase 12 — Lua Scripting
-
-- [ ] Embed a Lua interpreter (mlua or rlua)
-- [ ] EVAL, EVALSHA commands
-- [ ] SCRIPT LOAD, SCRIPT EXISTS, SCRIPT FLUSH
-- [ ] Redis-compatible Lua API: redis.call(), redis.pcall()
-- [ ] Key isolation (KEYS/ARGV arguments)
 
 ## Phase 13 — Cluster & Replication Basics
 
@@ -52,20 +49,16 @@
 - [ ] MONITOR command (real-time command stream)
 - [ ] CLIENT LIST with full connection metadata
 - [ ] More accurate INFO sections (memory, stats, keyspace)
-- [ ] OBJECT ENCODING with proper encoding detection
 
 ## Phase 16 — Missing Commands & Compatibility
 
-- [ ] COPY command
-- [ ] OBJECT FREQ, OBJECT HELP improvements
 - [ ] WAIT command
 - [ ] HELLO command (RESP3 negotiation stub)
 - [ ] ACL commands (basic user/password management)
-- [ ] GEORADIUS / GEOADD / GEODIST / GEOSEARCH (geo commands)
 - [ ] BITFIELD command
 - [ ] BLMOVE, BZPOPMIN, BZPOPMAX
 - [ ] Consumer groups: XGROUP CREATE, XREADGROUP, XACK, XPENDING
-- [ ] RDB/AOF serialization for Stream and HyperLogLog types
+- [ ] RDB/AOF serialization for Stream, HyperLogLog, and Geo types
 - [ ] Run against Redis TCL test suite in external mode
 
 ## Phase 17 — Production Hardening

@@ -5,6 +5,7 @@ use crate::keywatcher::{KeyWatcher, SharedKeyWatcher};
 use crate::persistence::aof::SharedAofWriter;
 use crate::pubsub::{PubSubReceiver, SharedPubSub};
 use crate::resp::{RespParser, RespValue};
+use crate::scripting::ScriptCache;
 use crate::store::SharedStore;
 use bytes::BytesMut;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +35,7 @@ pub async fn run_server(
 
     let change_counter: SharedChangeCounter = Arc::new(AtomicU64::new(0));
     let key_watcher: SharedKeyWatcher = Arc::new(RwLock::new(KeyWatcher::new()));
+    let script_cache = ScriptCache::new();
 
     // Spawn active expiration background task
     let store_clone = store.clone();
@@ -76,9 +78,10 @@ pub async fn run_server(
                 let aof = aof.clone();
                 let change_counter = change_counter.clone();
                 let key_watcher = key_watcher.clone();
+                let script_cache = script_cache.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher).await {
+                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher, script_cache).await {
                         debug!("Connection error from {peer_addr}: {e}");
                     }
                     debug!("Connection closed: {peer_addr}");
@@ -103,6 +106,7 @@ async fn handle_connection(
     aof: SharedAofWriter,
     change_counter: SharedChangeCounter,
     key_watcher: SharedKeyWatcher,
+    script_cache: ScriptCache,
 ) -> std::io::Result<()> {
     let mut client = ClientState::new();
     let mut buf = BytesMut::with_capacity(4096);
@@ -134,6 +138,7 @@ async fn handle_connection(
                         &aof,
                         &change_counter,
                         &key_watcher,
+                        &script_cache,
                     )
                     .await;
 
@@ -212,7 +217,9 @@ fn is_write_command(cmd: &str) -> bool {
             | "SADD" | "SREM" | "SPOP" | "SMOVE"
             | "ZADD" | "ZREM" | "ZINCRBY" | "ZUNIONSTORE" | "ZINTERSTORE" | "ZPOPMIN" | "ZPOPMAX"
             | "SETBIT" | "PFADD" | "PFMERGE" | "XADD" | "XTRIM" | "BITOP"
+            | "GEOADD" | "COPY"
             | "FLUSHDB" | "FLUSHALL" | "SWAPDB" | "SELECT"
+            | "EVAL" | "EVALSHA"
     )
 }
 
@@ -226,6 +233,7 @@ async fn process_command(
     aof: &SharedAofWriter,
     change_counter: &SharedChangeCounter,
     key_watcher: &SharedKeyWatcher,
+    script_cache: &ScriptCache,
 ) -> RespValue {
     let items = match value {
         RespValue::Array(Some(items)) if !items.is_empty() => items,
@@ -265,7 +273,7 @@ async fn process_command(
         change_counter.fetch_add(1, Ordering::Relaxed);
     }
 
-    command::dispatch(&cmd_name, args, store, config, client, pubsub, pubsub_tx, key_watcher).await
+    command::dispatch(&cmd_name, args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await
 }
 
 async fn cleanup_client(pubsub: &SharedPubSub, client: &ClientState) {

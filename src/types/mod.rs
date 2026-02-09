@@ -6,6 +6,7 @@ pub mod sorted_set;
 pub mod stream;
 pub mod bitmap;
 pub mod hyperloglog;
+pub mod geo;
 
 /// The core value type stored in the data store.
 #[derive(Debug, Clone)]
@@ -17,6 +18,7 @@ pub enum RedisValue {
     SortedSet(sorted_set::RedisSortedSet),
     Stream(stream::RedisStream),
     HyperLogLog(hyperloglog::HyperLogLog),
+    Geo(geo::GeoSet),
 }
 
 impl RedisValue {
@@ -29,6 +31,7 @@ impl RedisValue {
             RedisValue::SortedSet(_) => "zset",
             RedisValue::Stream(_) => "stream",
             RedisValue::HyperLogLog(_) => "hyperloglog",
+            RedisValue::Geo(_) => "zset",
         }
     }
 
@@ -126,6 +129,20 @@ impl RedisValue {
     pub fn as_hyperloglog_mut(&mut self) -> Option<&mut hyperloglog::HyperLogLog> {
         match self {
             RedisValue::HyperLogLog(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    pub fn as_geo(&self) -> Option<&geo::GeoSet> {
+        match self {
+            RedisValue::Geo(g) => Some(g),
+            _ => None,
+        }
+    }
+
+    pub fn as_geo_mut(&mut self) -> Option<&mut geo::GeoSet> {
+        match self {
+            RedisValue::Geo(g) => Some(g),
             _ => None,
         }
     }
