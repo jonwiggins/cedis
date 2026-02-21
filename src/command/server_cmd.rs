@@ -133,63 +133,253 @@ pub async fn cmd_swapdb(
 }
 
 pub async fn cmd_info(
-    _args: &[RespValue],
+    args: &[RespValue],
     store: &SharedStore,
     config: &SharedConfig,
 ) -> RespValue {
     let cfg = config.read().await;
     let mut store = store.write().await;
 
+    // Determine which section(s) to include
+    let section_filter: Option<String> = args.first()
+        .and_then(|a| a.to_string_lossy())
+        .map(|s| s.to_lowercase());
+
+    let show_all = section_filter.is_none()
+        || section_filter.as_deref() == Some("all")
+        || section_filter.as_deref() == Some("everything");
+
+    let show_section = |name: &str| -> bool {
+        show_all || section_filter.as_deref() == Some(name) || section_filter.as_deref() == Some("default")
+    };
+
     let mut info = String::new();
+    let used_mem = store.estimated_memory();
 
-    // Server section
-    info.push_str("# Server\r\n");
-    info.push_str("redis_version:7.0.0\r\n");
-    info.push_str("cedis_version:0.1.0\r\n");
-    info.push_str(&format!("process_id:{}\r\n", std::process::id()));
-    info.push_str(&format!("tcp_port:{}\r\n", cfg.port));
-    info.push_str("config_file:\r\n");
+    if show_section("server") {
+        info.push_str("# Server\r\n");
+        info.push_str("cedis_version:0.1.0\r\n");
+        info.push_str("redis_version:7.0.0\r\n");
+        info.push_str("redis_git_sha1:00000000\r\n");
+        info.push_str("redis_git_dirty:0\r\n");
+        info.push_str("redis_build_id:0\r\n");
+        info.push_str("redis_mode:standalone\r\n");
+        info.push_str("os:rust\r\n");
+        info.push_str("arch_bits:64\r\n");
+        info.push_str("monotonic_clock:POSIX clock_gettime\r\n");
+        info.push_str("multiplexing_api:epoll\r\n");
+        info.push_str("gcc_version:0.0.0\r\n");
+        info.push_str(&format!("process_id:{}\r\n", std::process::id()));
+        info.push_str("run_id:0000000000000000000000000000000000000000\r\n");
+        info.push_str(&format!("tcp_port:{}\r\n", cfg.port));
+        info.push_str("server_time_usec:0\r\n");
+        info.push_str("uptime_in_seconds:1\r\n");
+        info.push_str("uptime_in_days:0\r\n");
+        info.push_str(&format!("hz:{}\r\n", cfg.hz));
+        info.push_str(&format!("configured_hz:{}\r\n", cfg.hz));
+        info.push_str("lru_clock:0\r\n");
+        info.push_str("executable:/usr/local/bin/cedis\r\n");
+        info.push_str("config_file:\r\n");
+        info.push_str("\r\n");
+    }
 
-    // Clients section
-    info.push_str("\r\n# Clients\r\n");
-    info.push_str("connected_clients:1\r\n");
+    if show_section("clients") {
+        info.push_str("# Clients\r\n");
+        info.push_str("connected_clients:1\r\n");
+        info.push_str("cluster_connections:0\r\n");
+        info.push_str("maxclients:10000\r\n");
+        info.push_str("client_recent_max_input_buffer:0\r\n");
+        info.push_str("client_recent_max_output_buffer:0\r\n");
+        info.push_str("total_clients_connected_including_replicas:1\r\n");
+        info.push_str("blocked_clients:0\r\n");
+        info.push_str("tracking_clients:0\r\n");
+        info.push_str("clients_in_timeout_table:0\r\n");
+        info.push_str("\r\n");
+    }
 
-    // Memory section
-    info.push_str("\r\n# Memory\r\n");
-    info.push_str("used_memory:0\r\n");
-    info.push_str("used_memory_human:0B\r\n");
+    if show_section("memory") {
+        info.push_str("# Memory\r\n");
+        info.push_str(&format!("used_memory:{}\r\n", used_mem));
+        let human = if used_mem < 1024 {
+            format!("{used_mem}B")
+        } else if used_mem < 1024 * 1024 {
+            format!("{:.2}K", used_mem as f64 / 1024.0)
+        } else if used_mem < 1024 * 1024 * 1024 {
+            format!("{:.2}M", used_mem as f64 / (1024.0 * 1024.0))
+        } else {
+            format!("{:.2}G", used_mem as f64 / (1024.0 * 1024.0 * 1024.0))
+        };
+        info.push_str(&format!("used_memory_human:{human}\r\n"));
+        info.push_str(&format!("used_memory_rss:{}\r\n", used_mem));
+        info.push_str(&format!("used_memory_rss_human:{human}\r\n"));
+        info.push_str(&format!("used_memory_peak:{}\r\n", used_mem));
+        info.push_str(&format!("used_memory_peak_human:{human}\r\n"));
+        info.push_str("used_memory_peak_perc:100.00%\r\n");
+        info.push_str("used_memory_overhead:0\r\n");
+        info.push_str("used_memory_startup:0\r\n");
+        info.push_str("used_memory_dataset:0\r\n");
+        info.push_str("used_memory_dataset_perc:0.00%\r\n");
+        info.push_str("allocator_allocated:0\r\n");
+        info.push_str("allocator_active:0\r\n");
+        info.push_str("allocator_resident:0\r\n");
+        info.push_str(&format!("total_system_memory:{}\r\n", used_mem));
+        info.push_str("total_system_memory_human:0B\r\n");
+        info.push_str("used_memory_lua:0\r\n");
+        info.push_str("used_memory_scripts:0\r\n");
+        info.push_str("number_of_cached_scripts:0\r\n");
+        info.push_str(&format!("maxmemory:{}\r\n", cfg.maxmemory));
+        info.push_str(&format!("maxmemory_human:{}\r\n", if cfg.maxmemory == 0 { "0B".to_string() } else { format!("{}B", cfg.maxmemory) }));
+        info.push_str(&format!("maxmemory_policy:{}\r\n", cfg.maxmemory_policy));
+        info.push_str("allocator_frag_ratio:1.0\r\n");
+        info.push_str("allocator_frag_bytes:0\r\n");
+        info.push_str("allocator_rss_ratio:1.0\r\n");
+        info.push_str("allocator_rss_bytes:0\r\n");
+        info.push_str("rss_overhead_ratio:1.0\r\n");
+        info.push_str("rss_overhead_bytes:0\r\n");
+        info.push_str("mem_fragmentation_ratio:1.0\r\n");
+        info.push_str("mem_fragmentation_bytes:0\r\n");
+        info.push_str("mem_not_counted_for_evict:0\r\n");
+        info.push_str("mem_replication_backlog:0\r\n");
+        info.push_str("mem_clients_slaves:0\r\n");
+        info.push_str("mem_clients_normal:0\r\n");
+        info.push_str("mem_aof_buffer:0\r\n");
+        info.push_str("mem_allocator:libc\r\n");
+        info.push_str("active_defrag_running:0\r\n");
+        info.push_str("lazyfree_pending_objects:0\r\n");
+        info.push_str("lazyfreed_objects:0\r\n");
+        info.push_str("\r\n");
+    }
 
-    // Stats section
-    info.push_str("\r\n# Stats\r\n");
-    info.push_str("total_connections_received:0\r\n");
-    info.push_str("total_commands_processed:0\r\n");
-    // Drain lazy expired counts so expired_keys is accurate
-    store.drain_lazy_expired();
-    info.push_str(&format!("expired_keys:{}\r\n", store.expired_keys));
-    info.push_str(&format!("expired_keys_active:{}\r\n", store.expired_keys_active));
+    if show_section("stats") {
+        info.push_str("# Stats\r\n");
+        info.push_str("total_connections_received:0\r\n");
+        info.push_str("total_commands_processed:0\r\n");
+        info.push_str("instantaneous_ops_per_sec:0\r\n");
+        info.push_str("total_net_input_bytes:0\r\n");
+        info.push_str("total_net_output_bytes:0\r\n");
+        info.push_str("instantaneous_input_kbps:0.00\r\n");
+        info.push_str("instantaneous_output_kbps:0.00\r\n");
+        info.push_str("rejected_connections:0\r\n");
+        info.push_str("sync_full:0\r\n");
+        info.push_str("sync_partial_ok:0\r\n");
+        info.push_str("sync_partial_err:0\r\n");
+        store.drain_lazy_expired();
+        info.push_str(&format!("expired_keys:{}\r\n", store.expired_keys));
+        info.push_str(&format!("expired_stale_perc:0.00\r\n"));
+        info.push_str(&format!("expired_time_cap_reached_count:0\r\n"));
+        info.push_str("expire_cycle_cpu_milliseconds:0\r\n");
+        info.push_str("evicted_keys:0\r\n");
+        info.push_str("evicted_clients:0\r\n");
+        info.push_str("total_keys_evicted:0\r\n");
+        info.push_str("keyspace_hits:0\r\n");
+        info.push_str("keyspace_misses:0\r\n");
+        info.push_str("pubsub_channels:0\r\n");
+        info.push_str("pubsub_patterns:0\r\n");
+        info.push_str("latest_fork_usec:0\r\n");
+        info.push_str("total_forks:0\r\n");
+        info.push_str("migrate_cached_sockets:0\r\n");
+        info.push_str("slave_expires_tracked_keys:0\r\n");
+        info.push_str("active_defrag_hits:0\r\n");
+        info.push_str("active_defrag_misses:0\r\n");
+        info.push_str("active_defrag_key_hits:0\r\n");
+        info.push_str("active_defrag_key_misses:0\r\n");
+        info.push_str("tracking_total_keys:0\r\n");
+        info.push_str("tracking_total_items:0\r\n");
+        info.push_str("tracking_total_prefixes:0\r\n");
+        info.push_str("unexpected_error_replies:0\r\n");
+        info.push_str("total_error_replies:0\r\n");
+        info.push_str("dump_payload_sanitizations:0\r\n");
+        info.push_str("total_reads_processed:0\r\n");
+        info.push_str("total_writes_processed:0\r\n");
+        info.push_str("io_threaded_reads_processed:0\r\n");
+        info.push_str("io_threaded_writes_processed:0\r\n");
+        info.push_str("reply_buffer_shrinks:0\r\n");
+        info.push_str("reply_buffer_expands:0\r\n");
+        info.push_str("\r\n");
+    }
 
-    // Persistence section
-    info.push_str("\r\n# Persistence\r\n");
-    info.push_str("loading:0\r\n");
-    info.push_str(&format!("rdb_changes_since_last_save:{}\r\n", store.dirty));
-    info.push_str("rdb_bgsave_in_progress:0\r\n");
-    info.push_str("rdb_last_save_time:0\r\n");
-    info.push_str("rdb_last_bgsave_status:ok\r\n");
-    info.push_str("aof_rewrite_in_progress:0\r\n");
-    info.push_str("aof_last_bgrewrite_status:ok\r\n");
+    if show_section("persistence") {
+        info.push_str("# Persistence\r\n");
+        info.push_str("loading:0\r\n");
+        info.push_str(&format!("async_loading:0\r\n"));
+        info.push_str("current_cow_peak:0\r\n");
+        info.push_str("current_cow_size:0\r\n");
+        info.push_str("current_cow_size_age:0\r\n");
+        info.push_str("current_fork_perc:0.00\r\n");
+        info.push_str("current_save_keys_processed:0\r\n");
+        info.push_str("current_save_keys_total:0\r\n");
+        info.push_str(&format!("rdb_changes_since_last_save:{}\r\n", store.dirty));
+        info.push_str("rdb_bgsave_in_progress:0\r\n");
+        info.push_str("rdb_last_save_time:0\r\n");
+        info.push_str("rdb_last_bgsave_status:ok\r\n");
+        info.push_str("rdb_last_bgsave_time_sec:-1\r\n");
+        info.push_str("rdb_current_bgsave_time_sec:-1\r\n");
+        info.push_str("rdb_saves:0\r\n");
+        info.push_str("rdb_last_cow_size:0\r\n");
+        info.push_str(&format!("aof_enabled:{}\r\n", if cfg.appendonly { 1 } else { 0 }));
+        info.push_str("aof_rewrite_in_progress:0\r\n");
+        info.push_str("aof_rewrite_scheduled:0\r\n");
+        info.push_str("aof_last_rewrite_time_sec:-1\r\n");
+        info.push_str("aof_current_rewrite_time_sec:-1\r\n");
+        info.push_str("aof_last_bgrewrite_status:ok\r\n");
+        info.push_str("aof_last_write_status:ok\r\n");
+        info.push_str("aof_last_cow_size:0\r\n");
+        info.push_str("module_fork_in_progress:0\r\n");
+        info.push_str("module_fork_last_cow_size:0\r\n");
+        info.push_str("\r\n");
+    }
 
-    // Replication section
-    info.push_str("\r\n# Replication\r\n");
-    info.push_str("role:master\r\n");
-    info.push_str("connected_slaves:0\r\n");
+    if show_section("replication") {
+        info.push_str("# Replication\r\n");
+        info.push_str("role:master\r\n");
+        info.push_str("connected_slaves:0\r\n");
+        info.push_str("master_failover_state:no-failover\r\n");
+        info.push_str("master_replid:0000000000000000000000000000000000000000\r\n");
+        info.push_str("master_replid2:0000000000000000000000000000000000000000\r\n");
+        info.push_str("master_repl_offset:0\r\n");
+        info.push_str("second_repl_offset:-1\r\n");
+        info.push_str("repl_backlog_active:0\r\n");
+        info.push_str("repl_backlog_size:1048576\r\n");
+        info.push_str("repl_backlog_first_byte_offset:0\r\n");
+        info.push_str("repl_backlog_histlen:0\r\n");
+        info.push_str("\r\n");
+    }
 
-    // Keyspace section
-    info.push_str("\r\n# Keyspace\r\n");
-    for (i, db) in store.databases.iter().enumerate() {
-        let size = db.dbsize();
-        if size > 0 {
-            let expires = db.expires_count();
-            info.push_str(&format!("db{i}:keys={size},expires={expires},avg_ttl=0\r\n"));
+    if show_section("cpu") {
+        info.push_str("# CPU\r\n");
+        info.push_str("used_cpu_sys:0.000000\r\n");
+        info.push_str("used_cpu_user:0.000000\r\n");
+        info.push_str("used_cpu_sys_children:0.000000\r\n");
+        info.push_str("used_cpu_user_children:0.000000\r\n");
+        info.push_str("used_cpu_sys_main_thread:0.000000\r\n");
+        info.push_str("used_cpu_user_main_thread:0.000000\r\n");
+        info.push_str("\r\n");
+    }
+
+    if show_section("modules") {
+        info.push_str("# Modules\r\n");
+        info.push_str("\r\n");
+    }
+
+    if show_section("errorstats") {
+        info.push_str("# Errorstats\r\n");
+        info.push_str("\r\n");
+    }
+
+    if show_section("cluster") {
+        info.push_str("# Cluster\r\n");
+        info.push_str("cluster_enabled:0\r\n");
+        info.push_str("\r\n");
+    }
+
+    if show_section("keyspace") {
+        info.push_str("# Keyspace\r\n");
+        for (i, db) in store.databases.iter().enumerate() {
+            let size = db.dbsize();
+            if size > 0 {
+                let expires = db.expires_count();
+                info.push_str(&format!("db{i}:keys={size},expires={expires},avg_ttl=0\r\n"));
+            }
         }
     }
 

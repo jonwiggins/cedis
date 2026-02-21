@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
+# Ensure cargo is available
+if [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
 echo "Running pre-commit checks..."
 
 # Check formatting (if rustfmt is available)
