@@ -124,10 +124,13 @@ pub async fn dispatch(
         "SORT" | "SORT_RO" => key::cmd_sort(args, store, client).await,
         "COPY" => key::cmd_copy(args, store, client).await,
         "MOVE" => key::cmd_move(args, store, client).await,
+        "TOUCH" => key::cmd_touch(args, store, client).await,
 
         // Lists
         "LPUSH" => list::cmd_lpush(args, store, client, key_watcher).await,
         "RPUSH" => list::cmd_rpush(args, store, client, key_watcher).await,
+        "LPUSHX" => list::cmd_lpushx(args, store, client, key_watcher).await,
+        "RPUSHX" => list::cmd_rpushx(args, store, client, key_watcher).await,
         "LPOP" => list::cmd_lpop(args, store, client).await,
         "RPOP" => list::cmd_rpop(args, store, client).await,
         "LLEN" => list::cmd_llen(args, store, client).await,
@@ -549,7 +552,7 @@ fn is_known_command(cmd: &str) -> bool {
         "GET" | "SET" | "GETEX" | "GETSET" | "MGET" | "MSET" | "MSETNX" | "APPEND" | "STRLEN" | "LCS" |
         "INCR" | "DECR" | "INCRBY" | "DECRBY" | "INCRBYFLOAT" | "SETNX" | "SETEX" | "PSETEX" |
         "GETRANGE" | "SETRANGE" | "GETDEL" |
-        "LPUSH" | "RPUSH" | "LPOP" | "RPOP" | "LLEN" | "LRANGE" | "LINDEX" | "LSET" | "LINSERT" |
+        "LPUSH" | "RPUSH" | "LPUSHX" | "RPUSHX" | "LPOP" | "RPOP" | "LLEN" | "LRANGE" | "LINDEX" | "LSET" | "LINSERT" |
         "LREM" | "LTRIM" | "RPOPLPUSH" | "LMOVE" | "LPOS" | "LMPOP" | "BLPOP" | "BRPOP" | "BLMOVE" |
         "HSET" | "HGET" | "HDEL" | "HEXISTS" | "HLEN" | "HKEYS" | "HVALS" | "HGETALL" | "HMSET" |
         "HMGET" | "HINCRBY" | "HINCRBYFLOAT" | "HSETNX" | "HRANDFIELD" | "HSCAN" | "HSTRLEN" | "HGETDEL" |
@@ -569,13 +572,13 @@ fn is_known_command(cmd: &str) -> bool {
         "GEORADIUS" | "GEORADIUSBYMEMBER" | "GEOMEMBERS" |
         "DEL" | "UNLINK" | "EXISTS" | "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" |
         "EXPIRETIME" | "PEXPIRETIME" | "TTL" | "PTTL" | "PERSIST" | "TYPE" | "RENAME" | "RENAMENX" |
-        "KEYS" | "SCAN" | "RANDOMKEY" | "OBJECT" | "SORT" | "SORT_RO" | "COPY" | "MOVE" | "DUMP" | "RESTORE" |
+        "KEYS" | "SCAN" | "RANDOMKEY" | "OBJECT" | "SORT" | "SORT_RO" | "COPY" | "MOVE" | "DUMP" | "RESTORE" | "TOUCH" |
         "SUBSCRIBE" | "UNSUBSCRIBE" | "PUBLISH" | "PSUBSCRIBE" | "PUNSUBSCRIBE" | "PUBSUB" |
         "MULTI" | "EXEC" | "DISCARD" | "WATCH" | "UNWATCH" |
         "SAVE" | "BGSAVE" | "BGREWRITEAOF" | "LASTSAVE" |
         "EVAL" | "EVALSHA" | "SCRIPT" |
         "FUNCTION" | "HELLO" | "WAIT" | "FCALL" | "FCALL_RO" | "BLMPOP" |
-        "PFSELFTEST" | "PFDEBUG" | "SUBSTR" | "MEMORY" | "SLOWLOG" | "LATENCY" | "CLUSTER" |
+        "PFSELFTEST" | "PFDEBUG" | "SUBSTR" | "MEMORY" | "SLOWLOG" | "LATENCY" | "CLUSTER" | "MONITOR" |
         "WAITAOF" | "ACL" | "REPLICAOF" | "SLAVEOF" | "SYNC" | "PSYNC" |
         "DIGEST" | "DELEX" | "MSETEX"
     )

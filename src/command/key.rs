@@ -53,6 +53,30 @@ pub async fn cmd_exists(
     RespValue::integer(count)
 }
 
+pub async fn cmd_touch(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.is_empty() {
+        return wrong_arg_count("touch");
+    }
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+    let mut count = 0i64;
+
+    for arg in args {
+        if let Some(key) = arg_to_string(arg) {
+            if db.exists(&key) {
+                count += 1;
+            }
+        }
+    }
+
+    RespValue::integer(count)
+}
+
 /// Parse NX/XX/GT/LT option flags from expire command args starting at `start_idx`.
 fn parse_expire_flags(args: &[RespValue], start_idx: usize) -> Result<(bool, bool, bool, bool), RespValue> {
     let (mut nx, mut xx, mut gt, mut lt) = (false, false, false, false);

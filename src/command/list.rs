@@ -25,6 +25,81 @@ fn get_or_create_list<'a>(
     }
 }
 
+pub async fn cmd_lpushx(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
+) -> RespValue {
+    if args.len() < 2 {
+        return wrong_arg_count("lpushx");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    // Only push if the key already exists and is a list
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => {
+                for arg in &args[1..] {
+                    if let Some(value) = arg_to_bytes(arg) {
+                        list.lpush(value.to_vec());
+                    }
+                }
+                let len = list.len() as i64;
+                drop(store);
+                let mut watcher = key_watcher.write().await;
+                watcher.notify(&key);
+                RespValue::integer(len)
+            }
+            _ => wrong_type_error(),
+        },
+        None => RespValue::integer(0),
+    }
+}
+
+pub async fn cmd_rpushx(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
+) -> RespValue {
+    if args.len() < 2 {
+        return wrong_arg_count("rpushx");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => {
+                for arg in &args[1..] {
+                    if let Some(value) = arg_to_bytes(arg) {
+                        list.rpush(value.to_vec());
+                    }
+                }
+                let len = list.len() as i64;
+                drop(store);
+                let mut watcher = key_watcher.write().await;
+                watcher.notify(&key);
+                RespValue::integer(len)
+            }
+            _ => wrong_type_error(),
+        },
+        None => RespValue::integer(0),
+    }
+}
+
 pub async fn cmd_lpush(
     args: &[RespValue],
     store: &SharedStore,
