@@ -188,7 +188,7 @@ pub async fn dispatch(
         "SINTERCARD" => set::cmd_sintercard(args, store, client).await,
 
         // Sorted sets
-        "ZADD" => sorted_set::cmd_zadd(args, store, client).await,
+        "ZADD" => sorted_set::cmd_zadd(args, store, client, key_watcher).await,
         "ZREM" => sorted_set::cmd_zrem(args, store, client).await,
         "ZSCORE" => sorted_set::cmd_zscore(args, store, client).await,
         "ZRANK" => sorted_set::cmd_zrank(args, store, client).await,
@@ -219,8 +219,8 @@ pub async fn dispatch(
         "ZDIFFSTORE" => sorted_set::cmd_zdiffstore(args, store, client).await,
         "ZINTERCARD" => sorted_set::cmd_zintercard(args, store, client).await,
         "ZMPOP" => sorted_set::cmd_zmpop(args, store, client).await,
-        "BZPOPMIN" => sorted_set::cmd_bzpopmin(args, store, client).await,
-        "BZPOPMAX" => sorted_set::cmd_bzpopmax(args, store, client).await,
+        "BZPOPMIN" => sorted_set::cmd_bzpopmin(args, store, client, key_watcher).await,
+        "BZPOPMAX" => sorted_set::cmd_bzpopmax(args, store, client, key_watcher).await,
         "BZMPOP" => sorted_set::cmd_bzmpop(args, store, client).await,
 
         // Streams

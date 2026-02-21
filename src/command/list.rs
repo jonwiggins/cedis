@@ -8,6 +8,25 @@ use crate::types::RedisValue;
 use crate::types::list::RedisList;
 use std::time::Duration;
 
+/// Parse a blocking timeout argument (supports both integer and float values).
+/// Returns a Duration: 0 means block indefinitely (1 year), otherwise the specified seconds.
+fn parse_blocking_timeout(arg: &RespValue) -> Result<Duration, RespValue> {
+    let s = arg.to_string_lossy().ok_or_else(|| {
+        RespValue::error("ERR timeout is not a float or out of range")
+    })?;
+    let timeout: f64 = s.parse().map_err(|_| {
+        RespValue::error("ERR timeout is not a float or out of range")
+    })?;
+    if timeout < 0.0 {
+        return Err(RespValue::error("ERR timeout is not a float or out of range"));
+    }
+    if timeout == 0.0 {
+        Ok(Duration::from_secs(365 * 24 * 3600)) // Block indefinitely per Redis spec
+    } else {
+        Ok(Duration::from_secs_f64(timeout))
+    }
+}
+
 fn get_or_create_list<'a>(
     db: &'a mut crate::store::Database,
     key: &str,
@@ -771,9 +790,9 @@ pub async fn cmd_blpop(
         .filter_map(arg_to_string)
         .collect();
 
-    let timeout_secs = match arg_to_i64(&args[args.len() - 1]) {
-        Some(t) if t >= 0 => t as u64,
-        _ => return RespValue::error("ERR timeout is not a float or out of range"),
+    let timeout_dur = match parse_blocking_timeout(&args[args.len() - 1]) {
+        Ok(d) => d,
+        Err(e) => return e,
     };
 
     // Try immediate pop first
@@ -784,13 +803,6 @@ pub async fn cmd_blpop(
             return result;
         }
     }
-
-    // If timeout is 0, block indefinitely; otherwise use the specified timeout
-    let timeout_dur = if timeout_secs == 0 {
-        Duration::from_secs(300) // Cap at 5 minutes to prevent infinite hangs
-    } else {
-        Duration::from_secs(timeout_secs)
-    };
 
     // Register a single shared Notify for all keys
     let notify = {
@@ -836,9 +848,9 @@ pub async fn cmd_brpop(
         .filter_map(arg_to_string)
         .collect();
 
-    let timeout_secs = match arg_to_i64(&args[args.len() - 1]) {
-        Some(t) if t >= 0 => t as u64,
-        _ => return RespValue::error("ERR timeout is not a float or out of range"),
+    let timeout_dur = match parse_blocking_timeout(&args[args.len() - 1]) {
+        Ok(d) => d,
+        Err(e) => return e,
     };
 
     // Try immediate pop first
@@ -849,12 +861,6 @@ pub async fn cmd_brpop(
             return result;
         }
     }
-
-    let timeout_dur = if timeout_secs == 0 {
-        Duration::from_secs(300)
-    } else {
-        Duration::from_secs(timeout_secs)
-    };
 
     // Register a single shared Notify for all keys
     let notify = {
@@ -1045,9 +1051,9 @@ pub async fn cmd_blmove(
         return RespValue::error("ERR syntax error");
     }
 
-    let timeout_secs = match arg_to_i64(&args[4]) {
-        Some(t) if t >= 0 => t as u64,
-        _ => return RespValue::error("ERR timeout is not a float or out of range"),
+    let timeout_dur = match parse_blocking_timeout(&args[4]) {
+        Ok(d) => d,
+        Err(e) => return e,
     };
 
     // Try immediate move first
@@ -1058,12 +1064,6 @@ pub async fn cmd_blmove(
             return result;
         }
     }
-
-    let timeout_dur = if timeout_secs == 0 {
-        Duration::from_secs(300)
-    } else {
-        Duration::from_secs(timeout_secs)
-    };
 
     let keys = vec![src.clone()];
     let notify = {
@@ -1101,9 +1101,9 @@ pub async fn cmd_blmpop(
         return wrong_arg_count("blmpop");
     }
 
-    let timeout_secs = match arg_to_i64(&args[0]) {
-        Some(t) if t >= 0 => t as u64,
-        _ => return RespValue::error("ERR timeout is not a float or out of range"),
+    let timeout_dur = match parse_blocking_timeout(&args[0]) {
+        Ok(d) => d,
+        Err(e) => return e,
     };
 
     let numkeys = match arg_to_i64(&args[1]) {
@@ -1149,12 +1149,6 @@ pub async fn cmd_blmpop(
             return result;
         }
     }
-
-    let timeout_dur = if timeout_secs == 0 {
-        Duration::from_secs(300)
-    } else {
-        Duration::from_secs(timeout_secs)
-    };
 
     let notify = {
         let mut watcher = key_watcher.write().await;

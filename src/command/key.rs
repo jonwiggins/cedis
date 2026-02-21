@@ -1043,6 +1043,8 @@ pub async fn cmd_sort(
     let mut limit_offset: Option<usize> = None;
     let mut limit_count: Option<usize> = None;
     let mut store_dest: Option<String> = None;
+    let mut by_pattern: Option<String> = None;
+    let mut get_patterns: Vec<String> = Vec::new();
     let mut i = 1;
     while i < args.len() {
         let opt = match arg_to_string(&args[i]) {
@@ -1073,9 +1075,19 @@ pub async fn cmd_sort(
                     return RespValue::error("ERR syntax error");
                 }
             }
-            "BY" | "GET" => {
-                // Skip the pattern argument (BY/GET patterns not fully supported)
-                i += 1;
+            "BY" => {
+                if i + 1 < args.len() {
+                    by_pattern = arg_to_string(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "GET" => {
+                if i + 1 < args.len() {
+                    if let Some(pat) = arg_to_string(&args[i + 1]) {
+                        get_patterns.push(pat);
+                    }
+                    i += 1;
+                }
             }
             _ => {}
         }
@@ -1098,19 +1110,68 @@ pub async fn cmd_sort(
         None => vec![],
     };
 
-    // Sort
-    if alpha {
-        elements.sort();
-        if desc {
-            elements.reverse();
+    // Helper: resolve a pattern like "weight_*" by replacing * with the element value
+    let resolve_pattern = |db: &mut crate::store::Database, pattern: &str, element: &[u8]| -> Option<Vec<u8>> {
+        if pattern == "#" {
+            return Some(element.to_vec());
         }
-    } else {
-        // Numeric sort
-        elements.sort_by(|a, b| {
-            let a_num: f64 = String::from_utf8_lossy(a).parse().unwrap_or(0.0);
-            let b_num: f64 = String::from_utf8_lossy(b).parse().unwrap_or(0.0);
-            a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let elem_str = String::from_utf8_lossy(element);
+        // Check for hash field pattern: key->field
+        if let Some(arrow_pos) = pattern.find("->") {
+            let key_pattern = &pattern[..arrow_pos];
+            let field = &pattern[arrow_pos + 2..];
+            let lookup_key = key_pattern.replace('*', &elem_str);
+            let field_name = field.replace('*', &elem_str);
+            match db.get(&lookup_key) {
+                Some(entry) => match &entry.value {
+                    crate::types::RedisValue::Hash(h) => {
+                        h.get(&field_name).map(|v| v.to_vec())
+                    }
+                    _ => None,
+                },
+                None => None,
+            }
+        } else {
+            let lookup_key = pattern.replace('*', &elem_str);
+            match db.get(&lookup_key) {
+                Some(entry) => match &entry.value {
+                    crate::types::RedisValue::String(s) => Some(s.as_bytes().to_vec()),
+                    _ => None,
+                },
+                None => None,
+            }
+        }
+    };
+
+    // Sort using BY pattern if provided, or by element value
+    let nosort = by_pattern.as_deref() == Some("nosort");
+    if !nosort {
+        if let Some(ref by_pat) = by_pattern {
+            // Sort by external key values
+            if alpha {
+                elements.sort_by(|a, b| {
+                    let a_val = resolve_pattern(db, by_pat, a).unwrap_or_default();
+                    let b_val = resolve_pattern(db, by_pat, b).unwrap_or_default();
+                    a_val.cmp(&b_val)
+                });
+            } else {
+                elements.sort_by(|a, b| {
+                    let a_val = resolve_pattern(db, by_pat, a).unwrap_or_default();
+                    let b_val = resolve_pattern(db, by_pat, b).unwrap_or_default();
+                    let a_num: f64 = String::from_utf8_lossy(&a_val).parse().unwrap_or(0.0);
+                    let b_num: f64 = String::from_utf8_lossy(&b_val).parse().unwrap_or(0.0);
+                    a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        } else if alpha {
+            elements.sort();
+        } else {
+            elements.sort_by(|a, b| {
+                let a_num: f64 = String::from_utf8_lossy(a).parse().unwrap_or(0.0);
+                let b_num: f64 = String::from_utf8_lossy(b).parse().unwrap_or(0.0);
+                a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
         if desc {
             elements.reverse();
         }
@@ -1128,9 +1189,21 @@ pub async fn cmd_sort(
 
     // STORE or return
     if let Some(dest) = store_dest {
-        let len = elements.len() as i64;
+        // Build result items for storing
+        let store_items: Vec<Vec<u8>> = if get_patterns.is_empty() {
+            elements
+        } else {
+            let mut items = Vec::new();
+            for elem in &elements {
+                for pat in &get_patterns {
+                    items.push(resolve_pattern(db, pat, elem).unwrap_or_default());
+                }
+            }
+            items
+        };
+        let len = store_items.len() as i64;
         let mut list = crate::types::list::RedisList::new();
-        for elem in elements {
+        for elem in store_items {
             list.rpush(elem);
         }
         db.set(
@@ -1138,6 +1211,18 @@ pub async fn cmd_sort(
             Entry::new(crate::types::RedisValue::List(list)),
         );
         RespValue::integer(len)
+    } else if !get_patterns.is_empty() {
+        // With GET patterns, missing values are null bulk strings
+        let mut resp_items = Vec::new();
+        for elem in &elements {
+            for pat in &get_patterns {
+                match resolve_pattern(db, pat, elem) {
+                    Some(val) => resp_items.push(RespValue::bulk_string(val)),
+                    None => resp_items.push(RespValue::null_bulk_string()),
+                }
+            }
+        }
+        RespValue::array(resp_items)
     } else {
         let items: Vec<RespValue> = elements
             .into_iter()

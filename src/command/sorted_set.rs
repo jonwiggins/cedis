@@ -1,10 +1,12 @@
 use crate::command::{arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error};
 use crate::connection::ClientState;
+use crate::keywatcher::SharedKeyWatcher;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
 use crate::store::entry::Entry;
 use crate::types::RedisValue;
 use crate::types::sorted_set::RedisSortedSet;
+use std::time::Duration;
 
 fn get_or_create_zset<'a>(
     db: &'a mut crate::store::Database,
@@ -22,7 +24,7 @@ fn get_or_create_zset<'a>(
     }
 }
 
-pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientState, key_watcher: &SharedKeyWatcher) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("zadd");
     }
@@ -121,6 +123,9 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
         if new_score.is_nan() {
             return RespValue::error("ERR resulting score is not a number (NaN)");
         }
+        drop(store);
+        let mut watcher = key_watcher.write().await;
+        watcher.notify(&key);
         RespValue::bulk_string(format!("{new_score}").into_bytes())
     } else {
         // Pre-validate all scores before modifying anything (atomicity)
@@ -184,7 +189,13 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
             db.del(&key);
         }
 
-        RespValue::integer(if ch { added + changed } else { added })
+        let result = if ch { added + changed } else { added };
+        if added > 0 {
+            drop(store);
+            let mut watcher = key_watcher.write().await;
+            watcher.notify(&key);
+        }
+        RespValue::integer(result)
     }
 }
 
@@ -469,6 +480,7 @@ fn format_range_result(items: Vec<(&[u8], f64)>, withscores: bool) -> RespValue 
 }
 
 pub async fn cmd_zrange(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    // ZRANGE key min max [BYSCORE | BYLEX] [REV] [LIMIT offset count] [WITHSCORES]
     if args.len() < 3 {
         return wrong_arg_count("zrange");
     }
@@ -476,32 +488,152 @@ pub async fn cmd_zrange(args: &[RespValue], store: &SharedStore, client: &Client
         Some(k) => k,
         None => return RespValue::array(vec![]),
     };
-    let start = match arg_to_i64(&args[1]) {
-        Some(n) => n,
-        None => return RespValue::error("ERR value is not an integer or out of range"),
-    };
-    let stop = match arg_to_i64(&args[2]) {
-        Some(n) => n,
-        None => return RespValue::error("ERR value is not an integer or out of range"),
-    };
 
-    let withscores = args.len() > 3
-        && arg_to_string(&args[3])
-            .map(|s| s.to_uppercase() == "WITHSCORES")
-            .unwrap_or(false);
+    // Parse optional flags
+    let mut byscore = false;
+    let mut bylex = false;
+    let mut rev = false;
+    let mut withscores = false;
+    let mut limit_offset = 0usize;
+    let mut limit_count: Option<usize> = None;
+
+    let mut i = 3;
+    while i < args.len() {
+        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        match opt.as_str() {
+            "BYSCORE" => byscore = true,
+            "BYLEX" => bylex = true,
+            "REV" => rev = true,
+            "WITHSCORES" => withscores = true,
+            "LIMIT" => {
+                if i + 2 < args.len() {
+                    let off = arg_to_i64(&args[i + 1]).unwrap_or(0);
+                    let cnt = arg_to_i64(&args[i + 2]).unwrap_or(-1);
+                    if off < 0 {
+                        return RespValue::array(vec![]);
+                    }
+                    limit_offset = off as usize;
+                    limit_count = Some(if cnt < 0 { usize::MAX } else { cnt as usize });
+                    i += 2;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if byscore && bylex {
+        return RespValue::error("ERR BYSCORE and BYLEX options are not compatible");
+    }
+    if (byscore || bylex) && limit_count.is_none() {
+        // LIMIT is optional; if not specified, return all matches
+    }
 
     let mut store = store.write().await;
     let db = store.db(client.db_index);
 
-    match db.get(&key) {
-        Some(entry) => match &entry.value {
-            RedisValue::SortedSet(zset) => {
-                let items = zset.range(start, stop);
-                format_range_result(items, withscores)
-            }
-            _ => wrong_type_error(),
-        },
-        None => RespValue::array(vec![]),
+    if byscore {
+        // Score-based range
+        let (min_arg, max_arg) = if rev { (&args[2], &args[1]) } else { (&args[1], &args[2]) };
+        let (min_val, min_incl) = match parse_score_bound(min_arg, f64::NEG_INFINITY) {
+            Some(s) => s,
+            None => return RespValue::error("ERR min or max is not a float"),
+        };
+        let (max_val, max_incl) = match parse_score_bound(max_arg, f64::INFINITY) {
+            Some(s) => s,
+            None => return RespValue::error("ERR min or max is not a float"),
+        };
+
+        match db.get(&key) {
+            Some(entry) => match &entry.value {
+                RedisValue::SortedSet(zset) => {
+                    let items: Vec<(&[u8], f64)> = zset
+                        .range_by_score(min_val, max_val)
+                        .into_iter()
+                        .filter(|&(_, score)| {
+                            let above_min = if min_incl { score >= min_val } else { score > min_val };
+                            let below_max = if max_incl { score <= max_val } else { score < max_val };
+                            above_min && below_max
+                        })
+                        .collect();
+                    let items: Vec<(&[u8], f64)> = if rev {
+                        items.into_iter().rev().collect()
+                    } else {
+                        items
+                    };
+                    let items: Vec<(&[u8], f64)> = items
+                        .into_iter()
+                        .skip(limit_offset)
+                        .take(limit_count.unwrap_or(usize::MAX))
+                        .collect();
+                    format_range_result(items, withscores)
+                }
+                _ => wrong_type_error(),
+            },
+            None => RespValue::array(vec![]),
+        }
+    } else if bylex {
+        // Lex-based range
+        let (min_arg, max_arg) = if rev { (&args[2], &args[1]) } else { (&args[1], &args[2]) };
+        let min_bound = match parse_lex_bound(min_arg) {
+            Some(b) => b,
+            None => return RespValue::error("ERR min or max not valid string range item"),
+        };
+        let max_bound = match parse_lex_bound(max_arg) {
+            Some(b) => b,
+            None => return RespValue::error("ERR min or max not valid string range item"),
+        };
+
+        match db.get(&key) {
+            Some(entry) => match &entry.value {
+                RedisValue::SortedSet(zset) => {
+                    let items: Vec<RespValue> = if rev {
+                        zset.iter()
+                            .rev()
+                            .filter(|(m, _)| lex_in_range(m, &min_bound, &max_bound))
+                            .map(|(m, _)| RespValue::bulk_string(m.to_vec()))
+                            .skip(limit_offset)
+                            .take(limit_count.unwrap_or(usize::MAX))
+                            .collect()
+                    } else {
+                        zset.iter()
+                            .filter(|(m, _)| lex_in_range(m, &min_bound, &max_bound))
+                            .map(|(m, _)| RespValue::bulk_string(m.to_vec()))
+                            .skip(limit_offset)
+                            .take(limit_count.unwrap_or(usize::MAX))
+                            .collect()
+                    };
+                    RespValue::array(items)
+                }
+                _ => wrong_type_error(),
+            },
+            None => RespValue::array(vec![]),
+        }
+    } else {
+        // Index-based range (default)
+        let start = match arg_to_i64(&args[1]) {
+            Some(n) => n,
+            None => return RespValue::error("ERR value is not an integer or out of range"),
+        };
+        let stop = match arg_to_i64(&args[2]) {
+            Some(n) => n,
+            None => return RespValue::error("ERR value is not an integer or out of range"),
+        };
+
+        match db.get(&key) {
+            Some(entry) => match &entry.value {
+                RedisValue::SortedSet(zset) => {
+                    let items = if rev {
+                        zset.rev_range(start, stop)
+                    } else {
+                        zset.range(start, stop)
+                    };
+                    format_range_result(items, withscores)
+                }
+                _ => wrong_type_error(),
+            },
+            None => RespValue::array(vec![]),
+        }
     }
 }
 
@@ -1740,82 +1872,138 @@ pub async fn cmd_zlexcount(args: &[RespValue], store: &SharedStore, client: &Cli
     }
 }
 
-/// BZPOPMIN key [key ...] timeout — blocking pop min (non-blocking path only)
-pub async fn cmd_bzpopmin(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+/// Try to pop from the first non-empty sorted set. If `pop_min` is true, pops min; otherwise pops max.
+fn try_zpop_from_keys(db: &mut crate::store::Database, keys: &[String], pop_min: bool) -> Option<RespValue> {
+    for key in keys {
+        let is_zset = matches!(db.get(key), Some(e) if matches!(&e.value, RedisValue::SortedSet(z) if !z.is_empty()));
+        if !is_zset { continue; }
+
+        if let Some(entry) = db.get_mut(key) {
+            if let RedisValue::SortedSet(zset) = &mut entry.value {
+                let popped = if pop_min { zset.pop_min() } else { zset.pop_max() };
+                if let Some((member, score)) = popped {
+                    let empty = zset.is_empty();
+                    if empty { db.del(key); }
+                    return Some(RespValue::Array(Some(vec![
+                        RespValue::bulk_string(key.as_bytes().to_vec()),
+                        RespValue::bulk_string(member),
+                        RespValue::bulk_string(format!("{score}").into_bytes()),
+                    ])));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// BZPOPMIN key [key ...] timeout — blocking pop min
+pub async fn cmd_bzpopmin(args: &[RespValue], store: &SharedStore, client: &ClientState, key_watcher: &SharedKeyWatcher) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("bzpopmin");
     }
-    let _timeout = match arg_to_f64(&args[args.len() - 1]) {
+    let timeout = match arg_to_f64(&args[args.len() - 1]) {
         Some(t) if t < 0.0 => return RespValue::error("ERR timeout is not a float or out of range"),
         Some(t) => t,
         None => return RespValue::error("ERR timeout is not a float or out of range"),
     };
 
-    let mut store = store.write().await;
-    let db = store.db(client.db_index);
+    let keys: Vec<String> = args[..args.len() - 1]
+        .iter()
+        .filter_map(arg_to_string)
+        .collect();
 
-    for arg in &args[..args.len() - 1] {
-        let key = match arg_to_string(arg) {
-            Some(k) => k,
-            None => continue,
-        };
+    // Try immediate pop
+    {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        if let Some(result) = try_zpop_from_keys(db, &keys, true) {
+            return result;
+        }
+    }
 
-        let is_zset = matches!(db.get(&key), Some(e) if matches!(&e.value, RedisValue::SortedSet(z) if !z.is_empty()));
-        if !is_zset { continue; }
+    let timeout_dur = if timeout == 0.0 {
+        Duration::from_secs(365 * 24 * 3600)
+    } else {
+        Duration::from_secs_f64(timeout)
+    };
 
-        if let Some(entry) = db.get_mut(&key) {
-            if let RedisValue::SortedSet(zset) = &mut entry.value {
-                if let Some((member, score)) = zset.pop_min() {
-                    let empty = zset.is_empty();
-                    if empty { db.del(&key); }
-                    return RespValue::Array(Some(vec![
-                        RespValue::bulk_string(key.into_bytes()),
-                        RespValue::bulk_string(member),
-                        RespValue::bulk_string(format!("{score}").into_bytes()),
-                    ]));
-                }
-            }
+    let notify = {
+        let mut watcher = key_watcher.write().await;
+        watcher.register_many(&keys)
+    };
+
+    let notified = tokio::select! {
+        _ = notify.notified() => true,
+        _ = tokio::time::sleep(timeout_dur) => false,
+    };
+
+    {
+        let mut watcher = key_watcher.write().await;
+        watcher.unregister_many(&keys, &notify);
+    }
+
+    if notified {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        if let Some(result) = try_zpop_from_keys(db, &keys, true) {
+            return result;
         }
     }
 
     RespValue::null_array()
 }
 
-/// BZPOPMAX key [key ...] timeout — blocking pop max (non-blocking path only)
-pub async fn cmd_bzpopmax(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+/// BZPOPMAX key [key ...] timeout — blocking pop max
+pub async fn cmd_bzpopmax(args: &[RespValue], store: &SharedStore, client: &ClientState, key_watcher: &SharedKeyWatcher) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("bzpopmax");
     }
-    let _timeout = match arg_to_f64(&args[args.len() - 1]) {
+    let timeout = match arg_to_f64(&args[args.len() - 1]) {
         Some(t) if t < 0.0 => return RespValue::error("ERR timeout is not a float or out of range"),
         Some(t) => t,
         None => return RespValue::error("ERR timeout is not a float or out of range"),
     };
 
-    let mut store = store.write().await;
-    let db = store.db(client.db_index);
+    let keys: Vec<String> = args[..args.len() - 1]
+        .iter()
+        .filter_map(arg_to_string)
+        .collect();
 
-    for arg in &args[..args.len() - 1] {
-        let key = match arg_to_string(arg) {
-            Some(k) => k,
-            None => continue,
-        };
+    // Try immediate pop
+    {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        if let Some(result) = try_zpop_from_keys(db, &keys, false) {
+            return result;
+        }
+    }
 
-        let is_zset = matches!(db.get(&key), Some(e) if matches!(&e.value, RedisValue::SortedSet(z) if !z.is_empty()));
-        if !is_zset { continue; }
+    let timeout_dur = if timeout == 0.0 {
+        Duration::from_secs(365 * 24 * 3600)
+    } else {
+        Duration::from_secs_f64(timeout)
+    };
 
-        if let Some(entry) = db.get_mut(&key) {
-            if let RedisValue::SortedSet(zset) = &mut entry.value {
-                if let Some((member, score)) = zset.pop_max() {
-                    let empty = zset.is_empty();
-                    if empty { db.del(&key); }
-                    return RespValue::Array(Some(vec![
-                        RespValue::bulk_string(key.into_bytes()),
-                        RespValue::bulk_string(member),
-                        RespValue::bulk_string(format!("{score}").into_bytes()),
-                    ]));
-                }
-            }
+    let notify = {
+        let mut watcher = key_watcher.write().await;
+        watcher.register_many(&keys)
+    };
+
+    let notified = tokio::select! {
+        _ = notify.notified() => true,
+        _ = tokio::time::sleep(timeout_dur) => false,
+    };
+
+    {
+        let mut watcher = key_watcher.write().await;
+        watcher.unregister_many(&keys, &notify);
+    }
+
+    if notified {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        if let Some(result) = try_zpop_from_keys(db, &keys, false) {
+            return result;
         }
     }
 

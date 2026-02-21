@@ -210,7 +210,7 @@ impl RedisSortedSet {
     }
 
     /// Iterator over all (member, score) pairs in score order.
-    pub fn iter(&self) -> impl Iterator<Item = (&[u8], f64)> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&[u8], f64)> {
         self.tree
             .keys()
             .map(|k| (k.member.as_slice(), *self.scores.get(&k.member).unwrap()))
