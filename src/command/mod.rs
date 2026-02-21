@@ -58,7 +58,7 @@ pub async fn dispatch(
         "TIME" => server_cmd::cmd_time(),
         "COMMAND" => server_cmd::cmd_command(args),
         "CLIENT" => server_cmd::cmd_client(args, client),
-        "DEBUG" => server_cmd::cmd_debug(args).await,
+        "DEBUG" => server_cmd::cmd_debug(args, store, config, client).await,
         "RESET" => server_cmd::cmd_reset(client),
 
         // Strings
@@ -105,8 +105,8 @@ pub async fn dispatch(
         "SCAN" => key::cmd_scan(args, store, client).await,
         "RANDOMKEY" => key::cmd_randomkey(store, client).await,
         "OBJECT" => key::cmd_object(args, store, config, client).await,
-        "DUMP" => key::cmd_dump(args),
-        "RESTORE" => key::cmd_restore(args),
+        "DUMP" => key::cmd_dump(args, store, client).await,
+        "RESTORE" => key::cmd_restore(args, store, client).await,
         "SORT" | "SORT_RO" => key::cmd_sort(args, store, client).await,
         "COPY" => key::cmd_copy(args, store, client).await,
         "MOVE" => key::cmd_move(args, store, client).await,
@@ -139,13 +139,15 @@ pub async fn dispatch(
         "HKEYS" => hash::cmd_hkeys(args, store, client).await,
         "HVALS" => hash::cmd_hvals(args, store, client).await,
         "HGETALL" => hash::cmd_hgetall(args, store, client).await,
-        "HMSET" => hash::cmd_hset(args, store, client).await,
+        "HMSET" => hash::cmd_hmset(args, store, client).await,
         "HMGET" => hash::cmd_hmget(args, store, client).await,
         "HINCRBY" => hash::cmd_hincrby(args, store, client).await,
         "HINCRBYFLOAT" => hash::cmd_hincrbyfloat(args, store, client).await,
         "HSETNX" => hash::cmd_hsetnx(args, store, client).await,
         "HRANDFIELD" => hash::cmd_hrandfield(args, store, client).await,
         "HSCAN" => hash::cmd_hscan(args, store, client).await,
+        "HSTRLEN" => hash::cmd_hstrlen(args, store, client).await,
+        "HGETDEL" => hash::cmd_hgetdel(args, store, client).await,
 
         // Sets
         "SADD" => set::cmd_sadd(args, store, client).await,
@@ -189,6 +191,18 @@ pub async fn dispatch(
         "ZPOPMAX" => sorted_set::cmd_zpopmax(args, store, client).await,
         "ZMSCORE" => sorted_set::cmd_zmscore(args, store, client).await,
         "ZLEXCOUNT" => sorted_set::cmd_zlexcount(args, store, client).await,
+        "ZREMRANGEBYSCORE" => sorted_set::cmd_zremrangebyscore(args, store, client).await,
+        "ZREMRANGEBYLEX" => sorted_set::cmd_zremrangebylex(args, store, client).await,
+        "ZREMRANGEBYRANK" => sorted_set::cmd_zremrangebyrank(args, store, client).await,
+        "ZUNION" => sorted_set::cmd_zunion(args, store, client).await,
+        "ZINTER" => sorted_set::cmd_zinter(args, store, client).await,
+        "ZDIFF" => sorted_set::cmd_zdiff(args, store, client).await,
+        "ZDIFFSTORE" => sorted_set::cmd_zdiffstore(args, store, client).await,
+        "ZINTERCARD" => sorted_set::cmd_zintercard(args, store, client).await,
+        "ZMPOP" => sorted_set::cmd_zmpop(args, store, client).await,
+        "BZPOPMIN" => sorted_set::cmd_bzpopmin(args, store, client).await,
+        "BZPOPMAX" => sorted_set::cmd_bzpopmax(args, store, client).await,
+        "BZMPOP" => sorted_set::cmd_bzmpop(args, store, client).await,
 
         // Streams
         "XADD" => stream::cmd_xadd(args, store, client).await,
@@ -373,9 +387,69 @@ pub fn arg_to_i64(arg: &RespValue) -> Option<i64> {
 }
 
 /// Extract an f64 from a RespValue argument.
+/// Supports standard floats, inf/-inf, and C-style hex floats (0x1.0p+0).
 pub fn arg_to_f64(arg: &RespValue) -> Option<f64> {
     let s = arg.to_string_lossy()?;
-    s.parse().ok()
+    // Try standard parse first
+    if let Ok(v) = s.parse::<f64>() {
+        // Reject values that parse to infinity unless the input is explicitly "inf"
+        if v.is_infinite() {
+            let lower = s.to_lowercase();
+            let trimmed = lower.trim_start_matches(['+', '-']);
+            if trimmed != "inf" && trimmed != "infinity" {
+                return None;
+            }
+        }
+        return Some(v);
+    }
+    // Try hex float format (e.g., 0x1.0p+0, 0x0p+0)
+    let s_lower = s.to_lowercase();
+    if s_lower.starts_with("0x") || s_lower.starts_with("-0x") || s_lower.starts_with("+0x") {
+        return parse_hex_float(&s_lower);
+    }
+    None
+}
+
+fn parse_hex_float(s: &str) -> Option<f64> {
+    let (neg, hex_part) = if s.starts_with('-') {
+        (true, &s[3..]) // skip "-0x"
+    } else if s.starts_with('+') {
+        (false, &s[3..]) // skip "+0x"
+    } else {
+        (false, &s[2..]) // skip "0x"
+    };
+
+    // Split by 'p' for exponent
+    let (mantissa_str, exp_str) = if let Some(p) = hex_part.find('p') {
+        (&hex_part[..p], &hex_part[p + 1..])
+    } else {
+        (hex_part, "0")
+    };
+
+    // Parse mantissa as hex
+    let (int_part, frac_part) = if let Some(dot) = mantissa_str.find('.') {
+        (&mantissa_str[..dot], Some(&mantissa_str[dot + 1..]))
+    } else {
+        (mantissa_str, None)
+    };
+
+    let int_val = u64::from_str_radix(int_part, 16).unwrap_or(0) as f64;
+    let frac_val = if let Some(frac) = frac_part {
+        if frac.is_empty() {
+            0.0
+        } else {
+            let frac_int = u64::from_str_radix(frac, 16).ok()? as f64;
+            frac_int / (16.0f64).powi(frac.len() as i32)
+        }
+    } else {
+        0.0
+    };
+
+    let mantissa = int_val + frac_val;
+    let exp: i32 = exp_str.parse().ok()?;
+    let result = mantissa * (2.0f64).powi(exp);
+
+    Some(if neg { -result } else { result })
 }
 
 /// Return a WRONGTYPE error.

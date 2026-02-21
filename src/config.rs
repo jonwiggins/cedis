@@ -26,8 +26,12 @@ pub struct Config {
     pub hash_max_listpack_value: u64,
     pub set_max_intset_entries: u64,
     pub set_max_listpack_entries: u64,
+    pub set_max_listpack_value: u64,
+    pub list_compress_depth: i64,
     pub zset_max_listpack_entries: u64,
     pub zset_max_listpack_value: u64,
+    // Debug flags
+    pub active_expire_enabled: bool,
 }
 
 impl Default for Config {
@@ -53,8 +57,11 @@ impl Default for Config {
             hash_max_listpack_value: 64,
             set_max_intset_entries: 512,
             set_max_listpack_entries: 128,
+            set_max_listpack_value: 64,
+            list_compress_depth: 0,
             zset_max_listpack_entries: 128,
             zset_max_listpack_value: 64,
+            active_expire_enabled: true,
         }
     }
 }
@@ -161,6 +168,8 @@ impl Config {
             "hash-max-ziplist-value" | "hash-max-listpack-value" => Some(self.hash_max_listpack_value.to_string()),
             "set-max-intset-entries" => Some(self.set_max_intset_entries.to_string()),
             "set-max-listpack-entries" => Some(self.set_max_listpack_entries.to_string()),
+            "set-max-listpack-value" => Some(self.set_max_listpack_value.to_string()),
+            "list-compress-depth" => Some(self.list_compress_depth.to_string()),
             "zset-max-ziplist-entries" | "zset-max-listpack-entries" => Some(self.zset_max_listpack_entries.to_string()),
             "zset-max-ziplist-value" | "zset-max-listpack-value" => Some(self.zset_max_listpack_value.to_string()),
             "save" => {
@@ -237,6 +246,14 @@ impl Config {
             }
             "set-max-listpack-entries" => {
                 self.set_max_listpack_entries = value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "set-max-listpack-value" => {
+                self.set_max_listpack_value = value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "list-compress-depth" => {
+                self.list_compress_depth = value.parse().map_err(|_| "Invalid value".to_string())?;
                 Ok(())
             }
             "zset-max-ziplist-entries" | "zset-max-listpack-entries" => {

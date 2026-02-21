@@ -408,6 +408,18 @@ fn wrap_value(value: i64, signed: bool, bits: u32) -> u64 {
     }
 }
 
+/// Get the min/max range for a bitfield type as i128 values.
+fn bitfield_range(signed: bool, bits: u32) -> (i128, i128) {
+    if signed {
+        let min = if bits == 64 { i64::MIN as i128 } else { -(1i128 << (bits - 1)) };
+        let max = if bits == 64 { i64::MAX as i128 } else { (1i128 << (bits - 1)) - 1 };
+        (min, max)
+    } else {
+        let max = if bits >= 64 { u64::MAX as i128 } else { (1i128 << bits) - 1 };
+        (0, max)
+    }
+}
+
 /// Saturate a value to fit in the given number of bits.
 fn saturate_value(value: i64, signed: bool, bits: u32) -> u64 {
     if signed {
@@ -576,22 +588,49 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
             Op::Set { signed, bits, offset, value } => {
                 let old_raw = read_bits(&data, *offset, *bits);
                 let old_val = if *signed { to_signed(old_raw, *bits) } else { old_raw as i64 };
-                let old_len = data.len();
-                let new_raw = wrap_value(*value, *signed, *bits);
-                let changed = write_bits(&mut data, *offset, *bits, new_raw);
-                let len_changed = data.len() != old_len;
-                if changed || len_changed || !key_existed {
-                    dirty += 1;
+
+                match ov {
+                    Overflow::Fail => {
+                        // Check if value is within the type range
+                        let (min, max) = bitfield_range(*signed, *bits);
+                        let v = *value as i128;
+                        if v < min || v > max {
+                            results.push(RespValue::null_bulk_string());
+                        } else {
+                            let new_raw = wrap_value(*value, *signed, *bits);
+                            let old_len = data.len();
+                            let changed = write_bits(&mut data, *offset, *bits, new_raw);
+                            let len_changed = data.len() != old_len;
+                            if changed || len_changed || !key_existed {
+                                dirty += 1;
+                            }
+                            results.push(RespValue::integer(old_val));
+                        }
+                    }
+                    _ => {
+                        let old_len = data.len();
+                        let new_raw = match ov {
+                            Overflow::Sat => saturate_value(*value, *signed, *bits),
+                            _ => wrap_value(*value, *signed, *bits),
+                        };
+                        let changed = write_bits(&mut data, *offset, *bits, new_raw);
+                        let len_changed = data.len() != old_len;
+                        if changed || len_changed || !key_existed {
+                            dirty += 1;
+                        }
+                        results.push(RespValue::integer(old_val));
+                    }
                 }
-                results.push(RespValue::integer(old_val));
             }
             Op::IncrBy { signed, bits, offset, increment } => {
                 let old_raw = read_bits(&data, *offset, *bits);
                 let old_val = if *signed { to_signed(old_raw, *bits) } else { old_raw as i64 };
-                let new_val = old_val.wrapping_add(*increment);
+                // Use i128 for overflow-safe arithmetic
+                let sum = (old_val as i128) + (*increment as i128);
 
                 match ov {
                     Overflow::Wrap => {
+                        let new_val = old_val.wrapping_add(*increment);
                         let wrapped = wrap_value(new_val, *signed, *bits);
                         write_bits(&mut data, *offset, *bits, wrapped);
                         let result_val = if *signed { to_signed(wrapped, *bits) } else { wrapped as i64 };
@@ -599,21 +638,27 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                         dirty += 1;
                     }
                     Overflow::Sat => {
-                        let sat = saturate_value(new_val, *signed, *bits);
+                        let (min, max) = bitfield_range(*signed, *bits);
+                        let clamped = sum.max(min).min(max) as i64;
+                        let sat = if *signed {
+                            wrap_value(clamped, true, *bits)
+                        } else {
+                            clamped as u64
+                        };
                         write_bits(&mut data, *offset, *bits, sat);
                         let result_val = if *signed { to_signed(sat, *bits) } else { sat as i64 };
                         results.push(RespValue::integer(result_val));
                         dirty += 1;
                     }
                     Overflow::Fail => {
-                        // Check if overflow would occur
-                        let wrapped = wrap_value(new_val, *signed, *bits);
-                        let result_val = if *signed { to_signed(wrapped, *bits) } else { wrapped as i64 };
-                        if result_val != new_val {
+                        let (min, max) = bitfield_range(*signed, *bits);
+                        if sum < min || sum > max {
                             // Overflow occurred, don't apply
                             results.push(RespValue::null_bulk_string());
                         } else {
+                            let wrapped = wrap_value(sum as i64, *signed, *bits);
                             write_bits(&mut data, *offset, *bits, wrapped);
+                            let result_val = if *signed { to_signed(wrapped, *bits) } else { wrapped as i64 };
                             results.push(RespValue::integer(result_val));
                             dirty += 1;
                         }

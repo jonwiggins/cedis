@@ -62,6 +62,42 @@ pub async fn cmd_hset(
     RespValue::integer(new_fields)
 }
 
+pub async fn cmd_hmset(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() < 3 || args.len() % 2 == 0 {
+        return wrong_arg_count("hmset");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    let hash = match get_or_create_hash(db, &key) {
+        Ok(h) => h,
+        Err(e) => return e,
+    };
+
+    for pair in args[1..].chunks(2) {
+        let field = match arg_to_string(&pair[0]) {
+            Some(f) => f,
+            None => continue,
+        };
+        let value = match arg_to_bytes(&pair[1]) {
+            Some(v) => v.to_vec(),
+            None => continue,
+        };
+        hash.set(field, value);
+    }
+
+    RespValue::ok()
+}
+
 pub async fn cmd_hget(
     args: &[RespValue],
     store: &SharedStore,
@@ -110,23 +146,37 @@ pub async fn cmd_hdel(
     let mut store = store.write().await;
     let db = store.db(client.db_index);
 
-    match db.get_mut(&key) {
-        Some(entry) => match &mut entry.value {
-            RedisValue::Hash(h) => {
-                let mut count = 0i64;
-                for arg in &args[1..] {
-                    if let Some(field) = arg_to_string(arg) {
-                        if h.del(&field) {
-                            count += 1;
-                        }
+    let is_hash = matches!(db.get(&key), Some(entry) if matches!(&entry.value, RedisValue::Hash(_)));
+    if !is_hash {
+        return match db.get(&key) {
+            Some(_) => wrong_type_error(),
+            None => RespValue::integer(0),
+        };
+    }
+
+    let mut count = 0i64;
+    if let Some(entry) = db.get_mut(&key) {
+        if let RedisValue::Hash(h) = &mut entry.value {
+            for arg in &args[1..] {
+                if let Some(field) = arg_to_string(arg) {
+                    if h.del(&field) {
+                        count += 1;
                     }
                 }
-                RespValue::integer(count)
             }
-            _ => wrong_type_error(),
-        },
-        None => RespValue::integer(0),
+        }
     }
+
+    // Auto-delete key when hash becomes empty
+    if let Some(entry) = db.get(&key) {
+        if let RedisValue::Hash(h) = &entry.value {
+            if h.len() == 0 {
+                db.del(&key);
+            }
+        }
+    }
+
+    RespValue::integer(count)
 }
 
 pub async fn cmd_hexists(
@@ -379,6 +429,10 @@ pub async fn cmd_hincrbyfloat(
         None => return RespValue::error("ERR value is not a valid float"),
     };
 
+    if delta.is_nan() || delta.is_infinite() {
+        return RespValue::error("ERR value is NaN or Infinity");
+    }
+
     let mut store = store.write().await;
     let db = store.db(client.db_index);
 
@@ -425,6 +479,113 @@ pub async fn cmd_hsetnx(
     RespValue::integer(if hash.setnx(field, value) { 1 } else { 0 })
 }
 
+pub async fn cmd_hstrlen(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 2 {
+        return wrong_arg_count("hstrlen");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::integer(0),
+    };
+    let field = match arg_to_string(&args[1]) {
+        Some(f) => f,
+        None => return RespValue::integer(0),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get(&key) {
+        Some(entry) => match &entry.value {
+            RedisValue::Hash(h) => match h.get(&field) {
+                Some(v) => RespValue::integer(v.len() as i64),
+                None => RespValue::integer(0),
+            },
+            _ => wrong_type_error(),
+        },
+        None => RespValue::integer(0),
+    }
+}
+
+pub async fn cmd_hgetdel(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    // HGETDEL key FIELDS numfields field [field ...]
+    if args.len() < 4 {
+        return wrong_arg_count("hgetdel");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+    // args[1] should be "FIELDS"
+    match arg_to_string(&args[1]).map(|s| s.to_uppercase()) {
+        Some(ref s) if s == "FIELDS" => {}
+        _ => return RespValue::error("ERR Mandatory argument FIELDS is missing or not at the right position"),
+    }
+    let numfields = match arg_to_i64(&args[2]) {
+        Some(n) if n > 0 => n as usize,
+        _ => return RespValue::error("ERR Number of fields must be a positive integer"),
+    };
+    if args.len() != 3 + numfields {
+        return RespValue::error("ERR The `numfields` parameter must match the number of arguments");
+    }
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    let is_hash = matches!(db.get(&key), Some(entry) if matches!(&entry.value, RedisValue::Hash(_)));
+    if !is_hash {
+        return match db.get(&key) {
+            Some(entry) => match &entry.value {
+                RedisValue::Hash(_) => unreachable!(),
+                _ => wrong_type_error(),
+            },
+            None => {
+                let results: Vec<RespValue> = args[3..].iter().map(|_| RespValue::null_bulk_string()).collect();
+                RespValue::array(results)
+            }
+        };
+    }
+
+    let mut results = Vec::new();
+    if let Some(entry) = db.get_mut(&key) {
+        if let RedisValue::Hash(h) = &mut entry.value {
+            for arg in &args[3..] {
+                if let Some(field) = arg_to_string(arg) {
+                    match h.get(&field) {
+                        Some(v) => {
+                            let val = v.clone();
+                            h.del(&field);
+                            results.push(RespValue::bulk_string(val));
+                        }
+                        None => results.push(RespValue::null_bulk_string()),
+                    }
+                } else {
+                    results.push(RespValue::null_bulk_string());
+                }
+            }
+        }
+    }
+
+    // Auto-delete key when hash becomes empty
+    if let Some(entry) = db.get(&key) {
+        if let RedisValue::Hash(h) = &entry.value {
+            if h.len() == 0 {
+                db.del(&key);
+            }
+        }
+    }
+
+    RespValue::array(results)
+}
+
 pub async fn cmd_hrandfield(
     args: &[RespValue],
     store: &SharedStore,
@@ -453,25 +614,68 @@ pub async fn cmd_hrandfield(
                         None => RespValue::null_bulk_string(),
                     }
                 } else {
-                    // Count-based
-                    let _count = match arg_to_i64(&args[1]) {
+                    let count = match arg_to_i64(&args[1]) {
                         Some(n) => n,
                         None => return RespValue::error("ERR value is not an integer or out of range"),
                     };
                     let with_values = args.len() == 3;
-                    let _ = with_values;
-                    // Simplified: return all keys
-                    let keys: Vec<RespValue> = h
-                        .keys()
-                        .into_iter()
-                        .map(|k| RespValue::bulk_string(k.as_bytes().to_vec()))
-                        .collect();
-                    RespValue::array(keys)
+                    let allow_dups = count < 0;
+                    let abs_count = count.unsigned_abs() as usize;
+
+                    if abs_count == 0 {
+                        return RespValue::array(vec![]);
+                    }
+
+                    // Protect against OOM with extreme negative counts
+                    // (matches Redis threshold: abs(count) >= LONG_MAX/2)
+                    if allow_dups && abs_count >= (i64::MAX as usize) / 2 {
+                        return RespValue::error("ERR value is out of range");
+                    }
+
+                    use rand::seq::IteratorRandom;
+                    let mut rng = rand::thread_rng();
+                    let all_entries: Vec<(String, Vec<u8>)> = h.entries().into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+                    if all_entries.is_empty() {
+                        return RespValue::array(vec![]);
+                    }
+
+                    let mut result = Vec::new();
+                    if allow_dups {
+                        // Negative count: allow duplicates, return exactly abs_count elements
+                        for _ in 0..abs_count {
+                            let idx = rand::Rng::gen_range(&mut rng, 0..all_entries.len());
+                            let (k, v) = &all_entries[idx];
+                            result.push(RespValue::bulk_string(k.as_bytes().to_vec()));
+                            if with_values {
+                                result.push(RespValue::bulk_string(v.clone()));
+                            }
+                        }
+                    } else {
+                        // Positive count: unique elements, at most count
+                        let take = abs_count.min(all_entries.len());
+                        let indices: Vec<usize> = (0..all_entries.len()).choose_multiple(&mut rng, take);
+                        for idx in indices {
+                            let (k, v) = &all_entries[idx];
+                            result.push(RespValue::bulk_string(k.as_bytes().to_vec()));
+                            if with_values {
+                                result.push(RespValue::bulk_string(v.clone()));
+                            }
+                        }
+                    }
+                    RespValue::array(result)
                 }
             }
             _ => wrong_type_error(),
         },
-        None => RespValue::null_bulk_string(),
+        None => {
+            if args.len() >= 2 {
+                // Count variant with non-existing key returns empty array
+                RespValue::array(vec![])
+            } else {
+                RespValue::null_bulk_string()
+            }
+        }
     }
 }
 

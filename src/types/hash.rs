@@ -80,7 +80,7 @@ impl RedisHash {
         };
         let new_val = current + delta;
         if new_val.is_nan() || new_val.is_infinite() {
-            return Err("increment would produce NaN or Infinity");
+            return Err("value is NaN or Infinity");
         }
         self.data
             .insert(field.to_string(), format!("{new_val}").into_bytes());

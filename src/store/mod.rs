@@ -117,14 +117,32 @@ impl Database {
 
     /// Scan with cursor-based iteration.
     /// Returns (next_cursor, keys).
-    pub fn scan(&self, cursor: usize, pattern: Option<&str>, count: usize) -> (usize, Vec<String>) {
+    pub fn scan(&mut self, cursor: usize, pattern: Option<&str>, count: usize) -> (usize, Vec<String>) {
         self.scan_with_type(cursor, pattern, count, None)
     }
 
     /// Scan with cursor-based iteration and optional type filter.
-    pub fn scan_with_type(&self, cursor: usize, pattern: Option<&str>, count: usize, type_filter: Option<&str>) -> (usize, Vec<String>) {
+    /// Lazily expires keys that match the pattern and are expired.
+    pub fn scan_with_type(&mut self, cursor: usize, pattern: Option<&str>, count: usize, type_filter: Option<&str>) -> (usize, Vec<String>) {
         let now = now_millis();
-        let all_keys: Vec<&String> = self
+
+        // Lazily delete expired keys that match the scan pattern
+        // Do this BEFORE building the cursor list for stability
+        {
+            let expired_matches: Vec<String> = self.data.iter()
+                .filter(|(key, entry)| {
+                    entry.expires_at.is_some_and(|exp| now >= exp)
+                        && pattern.map_or(true, |pat| glob_match(pat, key))
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in expired_matches {
+                self.data.remove(&key);
+            }
+        }
+
+        // Build sorted key list from non-expired keys for deterministic cursor
+        let mut all_keys: Vec<&String> = self
             .data
             .iter()
             .filter(|(_, entry)| {
@@ -132,6 +150,7 @@ impl Database {
             })
             .map(|(key, _)| key)
             .collect();
+        all_keys.sort();
 
         let total = all_keys.len();
         if total == 0 || cursor >= total {
@@ -187,13 +206,7 @@ impl Database {
 
     /// Number of keys (excluding expired).
     pub fn dbsize(&self) -> usize {
-        let now = now_millis();
-        self.data
-            .iter()
-            .filter(|(_, entry)| {
-                !entry.expires_at.is_some_and(|exp| now >= exp)
-            })
-            .count()
+        self.data.len()
     }
 
     /// Flush all data.

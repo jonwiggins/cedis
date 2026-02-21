@@ -41,7 +41,7 @@ impl Entry {
                 if now >= exp {
                     -2
                 } else {
-                    ((exp - now) / 1000) as i64
+                    ((exp - now + 500) / 1000) as i64
                 }
             }
         }

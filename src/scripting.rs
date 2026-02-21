@@ -934,6 +934,34 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             RespValue::ok()
         }
 
+        "SCAN" => {
+            // SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]
+            if cmd_args.is_empty() {
+                return RespValue::error("ERR wrong number of arguments for 'scan' command");
+            }
+            let cursor: usize = cmd_args[0].parse().unwrap_or(0);
+            let mut pattern = None;
+            let mut count = 10usize;
+            let mut type_filter = None;
+            let mut i = 1;
+            while i < cmd_args.len() {
+                match cmd_args[i].to_uppercase().as_str() {
+                    "MATCH" => { i += 1; if i < cmd_args.len() { pattern = Some(cmd_args[i].clone()); } }
+                    "COUNT" => { i += 1; if i < cmd_args.len() { count = cmd_args[i].parse().unwrap_or(10); } }
+                    "TYPE" => { i += 1; if i < cmd_args.len() { type_filter = Some(cmd_args[i].clone()); } }
+                    _ => {}
+                }
+                i += 1;
+            }
+            let db = store.db(db_index);
+            let (next_cursor, keys) = db.scan_with_type(cursor, pattern.as_deref(), count, type_filter.as_deref());
+            let key_values: Vec<RespValue> = keys.into_iter().map(|k| RespValue::bulk_string(k.into_bytes())).collect();
+            RespValue::array(vec![
+                RespValue::bulk_string(next_cursor.to_string().into_bytes()),
+                RespValue::array(key_values),
+            ])
+        }
+
         _ => RespValue::error(format!(
             "ERR unknown or unsupported command '{}' called from Lua script",
             cmd

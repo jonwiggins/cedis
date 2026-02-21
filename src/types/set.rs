@@ -4,12 +4,15 @@ use std::collections::HashSet;
 #[derive(Debug, Clone)]
 pub struct RedisSet {
     data: HashSet<Vec<u8>>,
+    /// Once a non-integer member is added, the set can never go back to intset encoding.
+    was_non_intset: bool,
 }
 
 impl RedisSet {
     pub fn new() -> Self {
         RedisSet {
             data: HashSet::new(),
+            was_non_intset: false,
         }
     }
 
@@ -23,6 +26,16 @@ impl RedisSet {
 
     /// Add a member. Returns true if the member was new.
     pub fn add(&mut self, member: Vec<u8>) -> bool {
+        // Track if a non-integer was ever added (prevents downgrade to intset encoding)
+        if !self.was_non_intset {
+            let is_int = std::str::from_utf8(&member)
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .is_some();
+            if !is_int {
+                self.was_non_intset = true;
+            }
+        }
         self.data.insert(member)
     }
 
@@ -41,18 +54,21 @@ impl RedisSet {
     pub fn union(&self, other: &RedisSet) -> RedisSet {
         RedisSet {
             data: self.data.union(&other.data).cloned().collect(),
+            was_non_intset: self.was_non_intset || other.was_non_intset,
         }
     }
 
     pub fn intersect(&self, other: &RedisSet) -> RedisSet {
         RedisSet {
             data: self.data.intersection(&other.data).cloned().collect(),
+            was_non_intset: self.was_non_intset || other.was_non_intset,
         }
     }
 
     pub fn difference(&self, other: &RedisSet) -> RedisSet {
         RedisSet {
             data: self.data.difference(&other.data).cloned().collect(),
+            was_non_intset: self.was_non_intset || other.was_non_intset,
         }
     }
 
@@ -103,7 +119,13 @@ impl RedisSet {
     }
 
     pub fn from_set(data: HashSet<Vec<u8>>) -> Self {
-        RedisSet { data }
+        let was_non_intset = data.iter().any(|m| {
+            std::str::from_utf8(m)
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .is_none()
+        });
+        RedisSet { data, was_non_intset }
     }
 
     pub fn into_inner(self) -> HashSet<Vec<u8>> {
@@ -115,9 +137,9 @@ impl RedisSet {
         self.data.iter().any(|m| m.len() > max_bytes)
     }
 
-    /// Check if all members are integers (for intset encoding detection).
+    /// Check if all members are integers and the set was never promoted from intset.
     pub fn is_all_integers(&self) -> bool {
-        self.data.iter().all(|member| {
+        !self.was_non_intset && self.data.iter().all(|member| {
             std::str::from_utf8(member)
                 .ok()
                 .and_then(|s| s.parse::<i64>().ok())

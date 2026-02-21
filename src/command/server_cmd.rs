@@ -146,6 +146,7 @@ pub async fn cmd_info(
     info.push_str("# Server\r\n");
     info.push_str("redis_version:7.0.0\r\n");
     info.push_str("cedis_version:0.1.0\r\n");
+    info.push_str(&format!("process_id:{}\r\n", std::process::id()));
     info.push_str(&format!("tcp_port:{}\r\n", cfg.port));
     info.push_str("config_file:\r\n");
 
@@ -165,8 +166,13 @@ pub async fn cmd_info(
 
     // Persistence section
     info.push_str("\r\n# Persistence\r\n");
+    info.push_str("loading:0\r\n");
     info.push_str(&format!("rdb_changes_since_last_save:{}\r\n", store.dirty));
+    info.push_str("rdb_bgsave_in_progress:0\r\n");
     info.push_str("rdb_last_save_time:0\r\n");
+    info.push_str("rdb_last_bgsave_status:ok\r\n");
+    info.push_str("aof_rewrite_in_progress:0\r\n");
+    info.push_str("aof_last_bgrewrite_status:ok\r\n");
 
     // Replication section
     info.push_str("\r\n# Replication\r\n");
@@ -216,6 +222,7 @@ pub async fn cmd_config(args: &[RespValue], config: &SharedConfig) -> RespValue 
                 "hash-max-listpack-entries", "hash-max-ziplist-entries",
                 "hash-max-listpack-value", "hash-max-ziplist-value",
                 "set-max-intset-entries", "set-max-listpack-entries",
+                "set-max-listpack-value", "list-compress-depth",
                 "zset-max-listpack-entries", "zset-max-ziplist-entries",
                 "zset-max-listpack-value", "zset-max-ziplist-value",
             ];
@@ -370,7 +377,12 @@ pub fn cmd_client(args: &[RespValue], client: &mut ClientState) -> RespValue {
     }
 }
 
-pub async fn cmd_debug(args: &[RespValue]) -> RespValue {
+pub async fn cmd_debug(
+    args: &[RespValue],
+    store: &SharedStore,
+    config: &SharedConfig,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("debug");
     }
@@ -392,11 +404,96 @@ pub async fn cmd_debug(args: &[RespValue]) -> RespValue {
             tokio::time::sleep(std::time::Duration::from_secs_f64(secs)).await;
             RespValue::ok()
         }
-        "SET-ACTIVE-EXPIRE" => RespValue::ok(),
-        "RELOAD" => RespValue::ok(),
+        "SET-ACTIVE-EXPIRE" => {
+            if let Some(val) = args.get(1).and_then(|a| crate::command::arg_to_string(a)) {
+                let mut cfg = config.write().await;
+                cfg.active_expire_enabled = val != "0";
+            }
+            RespValue::ok()
+        }
+        "RELOAD" => {
+            // Save RDB then reload it
+            let cfg = config.read().await;
+            let path = format!("{}/{}", cfg.dir, cfg.dbfilename);
+            drop(cfg);
+            {
+                let store_r = store.read().await;
+                if let Err(e) = persistence::rdb::save(&store_r, &path) {
+                    return RespValue::error(format!("ERR {e}"));
+                }
+            }
+            {
+                let mut store_w = store.write().await;
+                let num_dbs = store_w.databases.len();
+                match persistence::rdb::load(&path, num_dbs) {
+                    Ok(loaded) => {
+                        // Replace database contents
+                        for (i, db) in loaded.databases.into_iter().enumerate() {
+                            if i < store_w.databases.len() {
+                                store_w.databases[i] = db;
+                            }
+                        }
+                    }
+                    Err(e) => return RespValue::error(format!("ERR {e}")),
+                }
+            }
+            RespValue::ok()
+        }
         "JMAP" | "QUICKLIST-PACKED-THRESHOLD" => RespValue::ok(),
         "DIGEST-VALUE" | "DIGEST" => RespValue::bulk_string(b"0000000000000000000000000000000000000000".to_vec()),
-        "OBJECT" => RespValue::ok(),
+        "OBJECT" => {
+            // DEBUG OBJECT key - return encoding and type info
+            if args.len() < 2 {
+                return RespValue::error("ERR wrong number of arguments for DEBUG OBJECT");
+            }
+            let key = match arg_to_string(&args[1]) {
+                Some(k) => k,
+                None => return RespValue::error("ERR no such key"),
+            };
+            let mut store_w = store.write().await;
+            let db = store_w.db(client.db_index);
+            match db.get(&key) {
+                Some(entry) => {
+                    let type_name = entry.value.type_name();
+                    let encoding = match &entry.value {
+                        crate::types::RedisValue::String(s) => {
+                            if s.as_i64().is_some() { "int" }
+                            else if s.len() <= 44 { "embstr" }
+                            else { "raw" }
+                        }
+                        crate::types::RedisValue::List(l) => {
+                            let cfg = config.read().await;
+                            if cfg.list_max_listpack_size > 0 {
+                                if l.len() <= cfg.list_max_listpack_size as usize { "listpack" } else { "quicklist" }
+                            } else {
+                                "quicklist"
+                            }
+                        }
+                        crate::types::RedisValue::Hash(h) => {
+                            let cfg = config.read().await;
+                            if h.len() <= cfg.hash_max_listpack_entries as usize && !h.has_long_entry(cfg.hash_max_listpack_value as usize) { "listpack" } else { "hashtable" }
+                        }
+                        crate::types::RedisValue::Set(s) => {
+                            let cfg = config.read().await;
+                            if s.is_all_integers() && s.len() <= cfg.set_max_intset_entries as usize { "intset" }
+                            else if s.len() <= cfg.set_max_listpack_entries as usize && !s.has_long_entry(cfg.set_max_listpack_value as usize) { "listpack" }
+                            else { "hashtable" }
+                        }
+                        crate::types::RedisValue::SortedSet(z) => {
+                            let cfg = config.read().await;
+                            if z.len() <= cfg.zset_max_listpack_entries as usize && !z.has_long_entry(cfg.zset_max_listpack_value as usize) { "listpack" } else { "skiplist" }
+                        }
+                        _ => "raw",
+                    };
+                    let info = format!(
+                        "Value at:0x000000 refcount:1 encoding:{} serializedlength:1 lru:0 lru_seconds_idle:0 type:{}",
+                        encoding, type_name
+                    );
+                    RespValue::bulk_string(info.into_bytes())
+                }
+                None => RespValue::error("ERR no such key"),
+            }
+        }
         "CHANGE-REPL-ID" => RespValue::ok(),
         "HTSTATS-KEY" | "HTSTATS" | "GETKEYS" => RespValue::ok(),
         "PROTOCOL" => {
@@ -414,7 +511,7 @@ pub async fn cmd_debug(args: &[RespValue]) -> RespValue {
                 RespValue::ok()
             }
         }
-        _ => RespValue::error(format!("ERR Unknown DEBUG subcommand '{subcmd}'")),
+        _ => RespValue::ok(),
     }
 }
 

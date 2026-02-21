@@ -369,6 +369,13 @@ async fn active_expiration_loop(store: SharedStore, config: SharedConfig) {
 
         tokio::time::sleep(interval).await;
 
+        {
+            let cfg = config.read().await;
+            if !cfg.active_expire_enabled {
+                continue;
+            }
+        }
+
         let mut store = store.write().await;
         store.active_expire_cycle();
     }

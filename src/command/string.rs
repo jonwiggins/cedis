@@ -56,17 +56,29 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
         match opt.as_str() {
             "EX" => {
                 i += 1;
-                ex = Some(match arg_to_i64(args.get(i).unwrap_or(&RespValue::null_bulk_string())) {
-                    Some(n) if n > 0 => n as u64,
+                let n = match arg_to_i64(args.get(i).unwrap_or(&RespValue::null_bulk_string())) {
+                    Some(n) if n > 0 => n,
                     _ => return RespValue::error("ERR invalid expire time in 'set' command"),
-                });
+                };
+                // Check for overflow: seconds * 1000 + now must fit in i64
+                let n_i128 = n as i128;
+                if n_i128 * 1000 + (now_millis() as i128) > i64::MAX as i128 {
+                    return RespValue::error("ERR invalid expire time in 'set' command");
+                }
+                ex = Some(n as u64);
             }
             "PX" => {
                 i += 1;
-                px = Some(match arg_to_i64(args.get(i).unwrap_or(&RespValue::null_bulk_string())) {
-                    Some(n) if n > 0 => n as u64,
+                let n = match arg_to_i64(args.get(i).unwrap_or(&RespValue::null_bulk_string())) {
+                    Some(n) if n > 0 => n,
                     _ => return RespValue::error("ERR invalid expire time in 'set' command"),
-                });
+                };
+                // Check for overflow: millis + now must fit in i64
+                let n_i128 = n as i128;
+                if n_i128 + (now_millis() as i128) > i64::MAX as i128 {
+                    return RespValue::error("ERR invalid expire time in 'set' command");
+                }
+                px = Some(n as u64);
             }
             "EXAT" => {
                 i += 1;
@@ -684,33 +696,47 @@ pub async fn cmd_getex(
         };
         match opt.as_str() {
             "EX" => {
-                if let Some(secs) = args.get(2).and_then(arg_to_i64) {
-                    if secs > 0 {
+                match args.get(2).and_then(arg_to_i64) {
+                    Some(secs) if secs > 0 => {
+                        // Check for overflow: seconds * 1000 + now must fit in i64
+                        let secs_i128 = secs as i128;
+                        if secs_i128 * 1000 + (now_millis() as i128) > i64::MAX as i128 {
+                            return RespValue::error("ERR invalid expire time in 'getex' command");
+                        }
                         let expires_at = now_millis() + (secs as u64) * 1000;
                         db.set_expiry(&key, expires_at);
                     }
+                    _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
                 }
             }
             "PX" => {
-                if let Some(ms) = args.get(2).and_then(arg_to_i64) {
-                    if ms > 0 {
+                match args.get(2).and_then(arg_to_i64) {
+                    Some(ms) if ms > 0 => {
+                        // Check for overflow: millis + now must fit in i64
+                        let ms_i128 = ms as i128;
+                        if ms_i128 + (now_millis() as i128) > i64::MAX as i128 {
+                            return RespValue::error("ERR invalid expire time in 'getex' command");
+                        }
                         let expires_at = now_millis() + ms as u64;
                         db.set_expiry(&key, expires_at);
                     }
+                    _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
                 }
             }
             "EXAT" => {
-                if let Some(ts) = args.get(2).and_then(arg_to_i64) {
-                    if ts > 0 {
+                match args.get(2).and_then(arg_to_i64) {
+                    Some(ts) if ts > 0 => {
                         db.set_expiry(&key, (ts as u64) * 1000);
                     }
+                    _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
                 }
             }
             "PXAT" => {
-                if let Some(ts) = args.get(2).and_then(arg_to_i64) {
-                    if ts > 0 {
+                match args.get(2).and_then(arg_to_i64) {
+                    Some(ts) if ts > 0 => {
                         db.set_expiry(&key, ts as u64);
                     }
+                    _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
                 }
             }
             "PERSIST" => {

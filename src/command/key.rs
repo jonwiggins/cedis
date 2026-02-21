@@ -53,12 +53,65 @@ pub async fn cmd_exists(
     RespValue::integer(count)
 }
 
+/// Parse NX/XX/GT/LT option flags from expire command args starting at `start_idx`.
+fn parse_expire_flags(args: &[RespValue], start_idx: usize) -> Result<(bool, bool, bool, bool), RespValue> {
+    let (mut nx, mut xx, mut gt, mut lt) = (false, false, false, false);
+    for i in start_idx..args.len() {
+        match arg_to_string(&args[i]).map(|s| s.to_uppercase()) {
+            Some(ref s) if s == "NX" => nx = true,
+            Some(ref s) if s == "XX" => xx = true,
+            Some(ref s) if s == "GT" => gt = true,
+            Some(ref s) if s == "LT" => lt = true,
+            _ => {
+                let opt_name = arg_to_string(&args[i]).unwrap_or_default();
+                return Err(RespValue::error(format!("ERR Unsupported option {}", opt_name)));
+            }
+        }
+    }
+    if nx && (xx || gt || lt) {
+        return Err(RespValue::error("ERR NX and XX, GT or LT options at the same time are not compatible"));
+    }
+    if gt && lt {
+        return Err(RespValue::error("ERR GT and LT options at the same time are not compatible"));
+    }
+    Ok((nx, xx, gt, lt))
+}
+
+/// Check if the new expiry should be applied given the flags and current expiry.
+fn should_set_expiry(current_expiry: Option<u64>, new_expiry: u64, nx: bool, xx: bool, gt: bool, lt: bool) -> bool {
+    if nx && current_expiry.is_some() {
+        return false;
+    }
+    if xx && current_expiry.is_none() {
+        return false;
+    }
+    match current_expiry {
+        Some(cur) => {
+            if gt && new_expiry <= cur {
+                return false;
+            }
+            if lt && new_expiry >= cur {
+                return false;
+            }
+        }
+        None => {
+            // No expiry = infinite TTL
+            // GT: new expiry can never be greater than infinite → reject
+            if gt {
+                return false;
+            }
+            // LT: any finite TTL is less than infinite → allow
+        }
+    }
+    true
+}
+
 pub async fn cmd_expire(
     args: &[RespValue],
     store: &SharedStore,
     client: &ClientState,
 ) -> RespValue {
-    if args.len() != 2 {
+    if args.len() < 2 {
         return wrong_arg_count("expire");
     }
     let key = match arg_to_string(&args[0]) {
@@ -69,17 +122,42 @@ pub async fn cmd_expire(
         Some(n) => n,
         None => return RespValue::error("ERR value is not an integer or out of range"),
     };
+    let (nx, xx, gt, lt) = match parse_expire_flags(args, 2) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
 
-    if seconds <= 0 {
-        // Negative or zero TTL means delete
+    // Check for overflow: seconds * 1000 must not overflow i64, and seconds * 1000 + now must not overflow
+    let seconds_i128 = seconds as i128;
+    let millis_i128 = seconds_i128 * 1000;
+    if millis_i128 > i64::MAX as i128 || millis_i128 < i64::MIN as i128 {
+        return RespValue::error("ERR invalid expire time in 'expire' command");
+    }
+    if seconds > 0 {
+        if millis_i128 + (now_millis() as i128) > i64::MAX as i128 {
+            return RespValue::error("ERR invalid expire time in 'expire' command");
+        }
+    }
+
+    if seconds <= 0 && !gt {
         let mut store = store.write().await;
         let db = store.db(client.db_index);
+        if !db.exists(&key) { return RespValue::integer(0); }
+        let current_expiry = db.get_expiry(&key);
+        if !should_set_expiry(current_expiry, 0, nx, xx, gt, lt) {
+            return RespValue::integer(0);
+        }
         return RespValue::integer(if db.del(&key) { 1 } else { 0 });
     }
 
     let expires_at = now_millis() + (seconds as u64) * 1000;
     let mut store = store.write().await;
     let db = store.db(client.db_index);
+    if !db.exists(&key) { return RespValue::integer(0); }
+    let current_expiry = db.get_expiry(&key);
+    if !should_set_expiry(current_expiry, expires_at, nx, xx, gt, lt) {
+        return RespValue::integer(0);
+    }
     RespValue::integer(if db.set_expiry(&key, expires_at) { 1 } else { 0 })
 }
 
@@ -88,7 +166,7 @@ pub async fn cmd_pexpire(
     store: &SharedStore,
     client: &ClientState,
 ) -> RespValue {
-    if args.len() != 2 {
+    if args.len() < 2 {
         return wrong_arg_count("pexpire");
     }
     let key = match arg_to_string(&args[0]) {
@@ -99,16 +177,42 @@ pub async fn cmd_pexpire(
         Some(n) => n,
         None => return RespValue::error("ERR value is not an integer or out of range"),
     };
+    let (nx, xx, gt, lt) = match parse_expire_flags(args, 2) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
 
-    if millis <= 0 {
+    // Check for overflow: millis + now must not overflow, and millis must fit sanely
+    let millis_i128 = millis as i128;
+    if millis_i128 > i64::MAX as i128 || millis_i128 < i64::MIN as i128 {
+        return RespValue::error("ERR invalid expire time in 'pexpire' command");
+    }
+    if millis > 0 {
+        let total = millis_i128 + (now_millis() as i128);
+        if total > i64::MAX as i128 {
+            return RespValue::error("ERR invalid expire time in 'pexpire' command");
+        }
+    }
+
+    if millis <= 0 && !gt {
         let mut store = store.write().await;
         let db = store.db(client.db_index);
+        if !db.exists(&key) { return RespValue::integer(0); }
+        let current_expiry = db.get_expiry(&key);
+        if !should_set_expiry(current_expiry, 0, nx, xx, gt, lt) {
+            return RespValue::integer(0);
+        }
         return RespValue::integer(if db.del(&key) { 1 } else { 0 });
     }
 
     let expires_at = now_millis() + millis as u64;
     let mut store = store.write().await;
     let db = store.db(client.db_index);
+    if !db.exists(&key) { return RespValue::integer(0); }
+    let current_expiry = db.get_expiry(&key);
+    if !should_set_expiry(current_expiry, expires_at, nx, xx, gt, lt) {
+        return RespValue::integer(0);
+    }
     RespValue::integer(if db.set_expiry(&key, expires_at) { 1 } else { 0 })
 }
 
@@ -117,7 +221,7 @@ pub async fn cmd_expireat(
     store: &SharedStore,
     client: &ClientState,
 ) -> RespValue {
-    if args.len() != 2 {
+    if args.len() < 2 {
         return wrong_arg_count("expireat");
     }
     let key = match arg_to_string(&args[0]) {
@@ -125,13 +229,41 @@ pub async fn cmd_expireat(
         None => return RespValue::integer(0),
     };
     let timestamp = match arg_to_i64(&args[1]) {
-        Some(n) if n >= 0 => n as u64,
+        Some(n) => n,
         _ => return RespValue::error("ERR value is not an integer or out of range"),
     };
+    let (nx, xx, gt, lt) = match parse_expire_flags(args, 2) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
 
-    let expires_at = timestamp * 1000;
+    // Negative or past timestamp means delete the key immediately
+    if timestamp < 0 {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        return RespValue::integer(if db.del(&key) { 1 } else { 0 });
+    }
+
+    let expires_at = (timestamp as u64).saturating_mul(1000);
+    // Check for overflow — if seconds * 1000 overflows, reject
+    if timestamp > 0 && expires_at / 1000 != timestamp as u64 {
+        return RespValue::error("ERR invalid expire time in 'expireat' command");
+    }
+
+    if expires_at < now_millis() {
+        // Past timestamp — delete the key
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        return RespValue::integer(if db.del(&key) { 1 } else { 0 });
+    }
+
     let mut store = store.write().await;
     let db = store.db(client.db_index);
+    if !db.exists(&key) { return RespValue::integer(0); }
+    let current_expiry = db.get_expiry(&key);
+    if !should_set_expiry(current_expiry, expires_at, nx, xx, gt, lt) {
+        return RespValue::integer(0);
+    }
     RespValue::integer(if db.set_expiry(&key, expires_at) { 1 } else { 0 })
 }
 
@@ -140,7 +272,7 @@ pub async fn cmd_pexpireat(
     store: &SharedStore,
     client: &ClientState,
 ) -> RespValue {
-    if args.len() != 2 {
+    if args.len() < 2 {
         return wrong_arg_count("pexpireat");
     }
     let key = match arg_to_string(&args[0]) {
@@ -148,13 +280,30 @@ pub async fn cmd_pexpireat(
         None => return RespValue::integer(0),
     };
     let timestamp = match arg_to_i64(&args[1]) {
-        Some(n) if n >= 0 => n as u64,
+        Some(n) => n,
         _ => return RespValue::error("ERR value is not an integer or out of range"),
     };
+    let (nx, xx, gt, lt) = match parse_expire_flags(args, 2) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
 
+    // Negative or past timestamp means delete the key immediately
+    if timestamp < 0 || (timestamp as u64) < now_millis() {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        return RespValue::integer(if db.del(&key) { 1 } else { 0 });
+    }
+
+    let ts = timestamp as u64;
     let mut store = store.write().await;
     let db = store.db(client.db_index);
-    RespValue::integer(if db.set_expiry(&key, timestamp) { 1 } else { 0 })
+    if !db.exists(&key) { return RespValue::integer(0); }
+    let current_expiry = db.get_expiry(&key);
+    if !should_set_expiry(current_expiry, ts, nx, xx, gt, lt) {
+        return RespValue::integer(0);
+    }
+    RespValue::integer(if db.set_expiry(&key, ts) { 1 } else { 0 })
 }
 
 pub async fn cmd_ttl(
@@ -418,8 +567,8 @@ pub async fn cmd_scan(
         i += 1;
     }
 
-    let store = store.read().await;
-    let db = &store.databases[client.db_index];
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
 
     let (next_cursor, keys) = db.scan_with_type(cursor, pattern.as_deref(), count, type_filter.as_deref());
 
@@ -527,9 +676,10 @@ pub async fn cmd_object(
                         crate::types::RedisValue::Set(s) => {
                             let max_intset = cfg.set_max_intset_entries as usize;
                             let max_listpack = cfg.set_max_listpack_entries as usize;
+                            let max_listpack_value = cfg.set_max_listpack_value as usize;
                             if s.is_all_integers() && s.len() <= max_intset {
                                 "intset"
-                            } else if s.len() <= max_listpack && !s.has_long_entry(64) {
+                            } else if s.len() <= max_listpack && !s.has_long_entry(max_listpack_value) {
                                 "listpack"
                             } else {
                                 "hashtable"
@@ -613,12 +763,241 @@ pub async fn cmd_object(
     }
 }
 
-pub fn cmd_dump(_args: &[RespValue]) -> RespValue {
-    RespValue::error("ERR DUMP not yet implemented")
+// Helper: encode a length as variable-length bytes (used in DUMP/RESTORE)
+fn dump_encode_len(data: &mut Vec<u8>, len: usize) {
+    data.extend_from_slice(&(len as u32).to_le_bytes());
 }
 
-pub fn cmd_restore(_args: &[RespValue]) -> RespValue {
-    RespValue::error("ERR RESTORE not yet implemented")
+fn dump_encode_bytes(data: &mut Vec<u8>, bytes: &[u8]) {
+    dump_encode_len(data, bytes.len());
+    data.extend_from_slice(bytes);
+}
+
+fn dump_decode_len(data: &[u8], offset: &mut usize) -> Option<usize> {
+    if *offset + 4 > data.len() { return None; }
+    let len = u32::from_le_bytes(data[*offset..*offset+4].try_into().ok()?) as usize;
+    *offset += 4;
+    Some(len)
+}
+
+fn dump_decode_bytes(data: &[u8], offset: &mut usize) -> Option<Vec<u8>> {
+    let len = dump_decode_len(data, offset)?;
+    if *offset + len > data.len() { return None; }
+    let bytes = data[*offset..*offset+len].to_vec();
+    *offset += len;
+    Some(bytes)
+}
+
+pub async fn cmd_dump(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() != 1 {
+        return wrong_arg_count("dump");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+    match db.get(&key) {
+        Some(entry) => {
+            // Format: [type_byte] [data...] [version_u16_le] [crc64_u64_le]
+            let mut data = Vec::new();
+            match &entry.value {
+                crate::types::RedisValue::String(s) => {
+                    data.push(0u8); // type: string
+                    dump_encode_bytes(&mut data, s.as_bytes());
+                }
+                crate::types::RedisValue::List(l) => {
+                    data.push(1u8); // type: list
+                    dump_encode_len(&mut data, l.len());
+                    for item in l.iter() {
+                        dump_encode_bytes(&mut data, item);
+                    }
+                }
+                crate::types::RedisValue::Set(s) => {
+                    data.push(2u8); // type: set
+                    let members = s.members();
+                    dump_encode_len(&mut data, members.len());
+                    for m in members {
+                        dump_encode_bytes(&mut data, m);
+                    }
+                }
+                crate::types::RedisValue::SortedSet(z) => {
+                    data.push(3u8); // type: sorted set
+                    dump_encode_len(&mut data, z.len());
+                    for (member, score) in z.iter() {
+                        dump_encode_bytes(&mut data, member);
+                        data.extend_from_slice(&score.to_le_bytes());
+                    }
+                }
+                crate::types::RedisValue::Hash(h) => {
+                    data.push(4u8); // type: hash
+                    dump_encode_len(&mut data, h.len());
+                    for (field, value) in h.iter() {
+                        dump_encode_bytes(&mut data, field.as_bytes());
+                        dump_encode_bytes(&mut data, value);
+                    }
+                }
+                _ => {
+                    // Fallback: serialize as empty string
+                    data.push(0u8);
+                    dump_encode_bytes(&mut data, &[]);
+                }
+            }
+            // Version (2 bytes LE) - use version 10
+            data.extend_from_slice(&10u16.to_le_bytes());
+            // CRC64 placeholder (8 bytes)
+            data.extend_from_slice(&[0u8; 8]);
+            RespValue::bulk_string(data)
+        }
+        None => RespValue::null_bulk_string(),
+    }
+}
+
+pub async fn cmd_restore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    // RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]
+    if args.len() < 3 {
+        return wrong_arg_count("restore");
+    }
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+    let ttl = match arg_to_i64(&args[1]) {
+        Some(n) => n,
+        None => return RespValue::error("ERR value is not an integer or out of range"),
+    };
+    let data = match crate::command::arg_to_bytes(&args[2]) {
+        Some(d) => d,
+        None => return RespValue::error("ERR DUMP payload version or checksum are wrong"),
+    };
+
+    let mut replace = false;
+    let mut absttl = false;
+    let mut i = 3;
+    while i < args.len() {
+        match arg_to_string(&args[i]).map(|s| s.to_uppercase()) {
+            Some(ref s) if s == "REPLACE" => replace = true,
+            Some(ref s) if s == "ABSTTL" => absttl = true,
+            Some(ref s) if s == "IDLETIME" || s == "FREQ" => { i += 1; }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let mut store_w = store.write().await;
+    let db = store_w.db(client.db_index);
+
+    if db.exists(&key) && !replace {
+        return RespValue::error("BUSYKEY Target key name already exists.");
+    }
+
+    // Try to deserialize from our DUMP format
+    // Minimum size: 1 (type) + 4 (length) + 2 (version) + 8 (crc) = 15 min for non-empty
+    if data.len() < 11 {
+        return RespValue::error("ERR DUMP payload version or checksum are wrong");
+    }
+
+    let type_byte = data[0];
+    let payload = &data[1..data.len() - 10]; // strip type byte, version, and crc
+    let mut offset = 0usize;
+
+    let value = match type_byte {
+        0 => {
+            // String
+            match dump_decode_bytes(payload, &mut offset) {
+                Some(bytes) => crate::types::RedisValue::String(
+                    crate::types::rstring::RedisString::new(bytes),
+                ),
+                None => crate::types::RedisValue::String(
+                    crate::types::rstring::RedisString::new(vec![]),
+                ),
+            }
+        }
+        1 => {
+            // List
+            let mut list = crate::types::list::RedisList::new();
+            if let Some(count) = dump_decode_len(payload, &mut offset) {
+                for _ in 0..count {
+                    if let Some(item) = dump_decode_bytes(payload, &mut offset) {
+                        list.rpush(item);
+                    }
+                }
+            }
+            crate::types::RedisValue::List(list)
+        }
+        2 => {
+            // Set
+            let mut set = crate::types::set::RedisSet::new();
+            if let Some(count) = dump_decode_len(payload, &mut offset) {
+                for _ in 0..count {
+                    if let Some(member) = dump_decode_bytes(payload, &mut offset) {
+                        set.add(member);
+                    }
+                }
+            }
+            crate::types::RedisValue::Set(set)
+        }
+        3 => {
+            // Sorted Set
+            let mut zset = crate::types::sorted_set::RedisSortedSet::new();
+            if let Some(count) = dump_decode_len(payload, &mut offset) {
+                for _ in 0..count {
+                    if let Some(member_bytes) = dump_decode_bytes(payload, &mut offset) {
+                        if offset + 8 <= payload.len() {
+                            let score = f64::from_le_bytes(
+                                payload[offset..offset + 8].try_into().unwrap(),
+                            );
+                            offset += 8;
+                            zset.add(member_bytes, score);
+                        }
+                    }
+                }
+            }
+            crate::types::RedisValue::SortedSet(zset)
+        }
+        4 => {
+            // Hash
+            let mut hash = crate::types::hash::RedisHash::new();
+            if let Some(count) = dump_decode_len(payload, &mut offset) {
+                for _ in 0..count {
+                    if let Some(field_bytes) = dump_decode_bytes(payload, &mut offset) {
+                        if let Some(value_bytes) = dump_decode_bytes(payload, &mut offset) {
+                            let field = String::from_utf8_lossy(&field_bytes).into_owned();
+                            hash.set(field, value_bytes);
+                        }
+                    }
+                }
+            }
+            crate::types::RedisValue::Hash(hash)
+        }
+        _ => {
+            return RespValue::error("ERR DUMP payload version or checksum are wrong");
+        }
+    };
+
+    let expires_at = if ttl > 0 {
+        if absttl {
+            Some(ttl as u64)
+        } else {
+            Some(now_millis() + ttl as u64)
+        }
+    } else {
+        None
+    };
+
+    let entry = Entry { value, expires_at };
+    db.set(key, entry);
+    RespValue::ok()
 }
 
 pub async fn cmd_sort(
