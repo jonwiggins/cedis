@@ -753,8 +753,12 @@ pub fn cmd_reset(client: &mut ClientState) -> RespValue {
     client.db_index = 0;
     client.in_multi = false;
     client.multi_queue.clear();
+    client.multi_error = false;
     client.watched_keys.clear();
+    client.watch_dirty = false;
     client.name = None;
+    client.subscriptions = 0;
+    client.in_monitor = false;
     RespValue::SimpleString("RESET".to_string())
 }
 

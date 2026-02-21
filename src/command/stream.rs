@@ -458,6 +458,115 @@ pub async fn cmd_xread(
     }
 }
 
+/// XDEL key id [id ...]
+pub async fn cmd_xdel(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.len() < 2 {
+        return wrong_arg_count("xdel");
+    }
+
+    let key = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::error("ERR invalid key"),
+    };
+
+    let mut ids = Vec::new();
+    for arg in &args[1..] {
+        match arg_to_string(arg).and_then(|s| StreamEntryId::parse(&s)) {
+            Some(id) => ids.push(id),
+            None => return RespValue::error("ERR Invalid stream ID specified as stream command argument"),
+        }
+    }
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+
+    match db.get_mut(&key) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::Stream(s) => {
+                let deleted = s.xdel(&ids);
+                RespValue::integer(deleted as i64)
+            }
+            _ => wrong_type_error(),
+        },
+        None => RespValue::integer(0),
+    }
+}
+
+/// XINFO STREAM key [FULL [COUNT count]]
+pub async fn cmd_xinfo(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
+    if args.is_empty() {
+        return wrong_arg_count("xinfo");
+    }
+
+    let sub = match arg_to_string(&args[0]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR invalid subcommand"),
+    };
+
+    match sub.as_str() {
+        "STREAM" => {
+            if args.len() < 2 {
+                return wrong_arg_count("xinfo|stream");
+            }
+            let key = match arg_to_string(&args[1]) {
+                Some(k) => k,
+                None => return RespValue::error("ERR invalid key"),
+            };
+
+            let mut store = store.write().await;
+            let db = store.db(client.db_index);
+
+            match db.get(&key) {
+                Some(entry) => match &entry.value {
+                    RedisValue::Stream(s) => {
+                        let mut result = vec![
+                            RespValue::bulk_string(b"length".to_vec()),
+                            RespValue::integer(s.len() as i64),
+                            RespValue::bulk_string(b"radix-tree-keys".to_vec()),
+                            RespValue::integer(1),
+                            RespValue::bulk_string(b"radix-tree-nodes".to_vec()),
+                            RespValue::integer(2),
+                            RespValue::bulk_string(b"last-generated-id".to_vec()),
+                            RespValue::bulk_string(s.last_id().to_string().into_bytes()),
+                            RespValue::bulk_string(b"groups".to_vec()),
+                            RespValue::integer(0),
+                        ];
+                        if let Some((id, fields)) = s.first_entry() {
+                            result.push(RespValue::bulk_string(b"first-entry".to_vec()));
+                            result.push(entry_to_resp(id, fields));
+                        }
+                        if let Some((id, fields)) = s.last_entry() {
+                            result.push(RespValue::bulk_string(b"last-entry".to_vec()));
+                            result.push(entry_to_resp(id, fields));
+                        }
+                        RespValue::array(result)
+                    }
+                    _ => wrong_type_error(),
+                },
+                None => RespValue::error("ERR no such key"),
+            }
+        }
+        "GROUPS" => RespValue::array(vec![]),
+        "CONSUMERS" => RespValue::array(vec![]),
+        "HELP" => RespValue::array(vec![
+            RespValue::bulk_string(b"XINFO <subcommand> [<arg> [value] [opt] ...]. Subcommands are:".to_vec()),
+            RespValue::bulk_string(b"CONSUMERS <key> <groupname>".to_vec()),
+            RespValue::bulk_string(b"GROUPS <key>".to_vec()),
+            RespValue::bulk_string(b"STREAM <key> [FULL [COUNT <count>]]".to_vec()),
+            RespValue::bulk_string(b"HELP".to_vec()),
+        ]),
+        _ => RespValue::error("ERR unknown subcommand"),
+    }
+}
+
 /// XTRIM key MAXLEN [~] count
 pub async fn cmd_xtrim(
     args: &[RespValue],

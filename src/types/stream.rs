@@ -138,6 +138,27 @@ impl RedisStream {
         keys_to_remove.len()
     }
 
+    /// Delete entries by ID. Returns the number of entries actually deleted.
+    pub fn xdel(&mut self, ids: &[StreamEntryId]) -> usize {
+        let mut count = 0;
+        for id in ids {
+            if self.entries.remove(id).is_some() {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Return the first entry (lowest ID).
+    pub fn first_entry(&self) -> Option<(&StreamEntryId, &StreamEntry)> {
+        self.entries.iter().next()
+    }
+
+    /// Return the last entry (highest ID).
+    pub fn last_entry(&self) -> Option<(&StreamEntryId, &StreamEntry)> {
+        self.entries.iter().next_back()
+    }
+
     /// Return a reference to the last entry ID.
     pub fn last_id(&self) -> &StreamEntryId {
         &self.last_id

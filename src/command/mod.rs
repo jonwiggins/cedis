@@ -245,18 +245,8 @@ pub async fn dispatch(
         "XCLAIM" => RespValue::array(vec![]),
         "XPENDING" => RespValue::array(vec![]),
         "XREADGROUP" => RespValue::null_array(),
-        "XDEL" => RespValue::integer(0),
-        "XINFO" => {
-            let sub = args.first().and_then(|a| a.to_string_lossy()).map(|s| s.to_uppercase()).unwrap_or_default();
-            match sub.as_str() {
-                "STREAM" => RespValue::array(vec![
-                    RespValue::bulk_string(b"length".to_vec()), RespValue::integer(0),
-                ]),
-                "GROUPS" => RespValue::array(vec![]),
-                "CONSUMERS" => RespValue::array(vec![]),
-                _ => RespValue::error("ERR unknown subcommand"),
-            }
-        }
+        "XDEL" => stream::cmd_xdel(args, store, client).await,
+        "XINFO" => stream::cmd_xinfo(args, store, client).await,
 
         // Bitmaps
         "SETBIT" => bitmap::cmd_setbit(args, store, client).await,
