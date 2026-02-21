@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check formatting (if rustfmt is available)
+if cargo fmt --version >/dev/null 2>&1; then
+    echo "  Checking cargo fmt..."
+    if ! cargo fmt --check >/dev/null 2>&1; then
+        echo ""
+        echo "ERROR: Code is not formatted. Run 'cargo fmt' and try again."
+        exit 1
+    fi
+else
+    echo "  Skipping cargo fmt (not installed — run 'rustup component add rustfmt')"
+fi
+
+# Run clippy if available, otherwise fall back to cargo check
+if cargo clippy --version >/dev/null 2>&1; then
+    echo "  Checking cargo clippy..."
+    if ! cargo clippy -- -D warnings 2>&1; then
+        echo ""
+        echo "ERROR: Clippy warnings found. Fix them and try again."
+        exit 1
+    fi
+else
+    echo "  Checking cargo check (install clippy for stricter linting: 'rustup component add clippy')"
+    CHECK_OUTPUT=$(cargo check 2>&1)
+    if echo "$CHECK_OUTPUT" | grep -q "^warning\|warning:.*generated"; then
+        echo ""
+        echo "ERROR: Compiler warnings found. Fix them and try again."
+        echo "$CHECK_OUTPUT" | grep "warning"
+        exit 1
+    fi
+fi
+
+echo "Pre-commit checks passed."
