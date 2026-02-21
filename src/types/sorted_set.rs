@@ -249,10 +249,3 @@ impl RedisSortedSet {
     }
 }
 
-fn normalize_index(index: i64, len: i64) -> usize {
-    if index < 0 {
-        (len + index).max(0) as usize
-    } else {
-        index as usize
-    }
-}

@@ -946,9 +946,9 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             let mut i = 1;
             while i < cmd_args.len() {
                 match cmd_args[i].to_uppercase().as_str() {
-                    "MATCH" => { i += 1; if i < cmd_args.len() { pattern = Some(cmd_args[i].clone()); } }
+                    "MATCH" => { i += 1; if i < cmd_args.len() { pattern = Some(cmd_args[i].to_string()); } }
                     "COUNT" => { i += 1; if i < cmd_args.len() { count = cmd_args[i].parse().unwrap_or(10); } }
-                    "TYPE" => { i += 1; if i < cmd_args.len() { type_filter = Some(cmd_args[i].clone()); } }
+                    "TYPE" => { i += 1; if i < cmd_args.len() { type_filter = Some(cmd_args[i].to_string()); } }
                     _ => {}
                 }
                 i += 1;

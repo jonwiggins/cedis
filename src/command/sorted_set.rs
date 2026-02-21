@@ -454,9 +454,6 @@ fn format_score(score: f64) -> String {
         return format!("{}", score as i64);
     }
     // Use 17 significant digits like Redis's %.17g
-    let s = format!("{:.17e}", score);
-    // Convert scientific notation to decimal-like format matching %.17g
-    // Simpler approach: use ryu for accurate shortest representation
     format!("{}", score)
 }
 
