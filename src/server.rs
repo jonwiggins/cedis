@@ -1,6 +1,6 @@
 use crate::command;
 use crate::config::SharedConfig;
-use crate::connection::ClientState;
+use crate::connection::{ClientState, MonitorSender, new_monitor_sender};
 use crate::keywatcher::{KeyWatcher, SharedKeyWatcher};
 use crate::persistence::aof::SharedAofWriter;
 use crate::pubsub::{PubSubReceiver, SharedPubSub};
@@ -36,6 +36,7 @@ pub async fn run_server(
     let change_counter: SharedChangeCounter = Arc::new(AtomicU64::new(0));
     let key_watcher: SharedKeyWatcher = Arc::new(RwLock::new(KeyWatcher::new()));
     let script_cache = ScriptCache::new();
+    let monitor_tx = new_monitor_sender();
 
     // Spawn active expiration background task
     let store_clone = store.clone();
@@ -79,9 +80,10 @@ pub async fn run_server(
                 let change_counter = change_counter.clone();
                 let key_watcher = key_watcher.clone();
                 let script_cache = script_cache.clone();
+                let monitor_tx = monitor_tx.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher, script_cache).await {
+                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher, script_cache, monitor_tx).await {
                         debug!("Connection error from {peer_addr}: {e}");
                     }
                     debug!("Connection closed: {peer_addr}");
@@ -107,9 +109,11 @@ async fn handle_connection(
     change_counter: SharedChangeCounter,
     key_watcher: SharedKeyWatcher,
     script_cache: ScriptCache,
+    monitor_tx: MonitorSender,
 ) -> std::io::Result<()> {
     let mut client = ClientState::new();
     let mut buf = BytesMut::with_capacity(4096);
+    let mut monitor_rx: Option<tokio::sync::broadcast::Receiver<String>> = None;
 
     // Create pub/sub receiver channel
     let (pubsub_tx, mut pubsub_rx): (mpsc::UnboundedSender<RespValue>, PubSubReceiver) =
@@ -136,6 +140,13 @@ async fn handle_connection(
                     continue;
                 }
                 Ok(Some(value)) => {
+                    // Check if this is a MONITOR command
+                    let is_monitor = matches!(
+                        &value,
+                        RespValue::Array(Some(items)) if !items.is_empty()
+                            && items[0].to_string_lossy().map(|s| s.to_uppercase()) == Some("MONITOR".to_string())
+                    );
+
                     let response = process_command(
                         value,
                         &store,
@@ -147,11 +158,16 @@ async fn handle_connection(
                         &change_counter,
                         &key_watcher,
                         &script_cache,
+                        &monitor_tx,
                     )
                     .await;
 
                     let serialized = response.serialize();
                     stream.write_all(&serialized).await?;
+
+                    if is_monitor && client.in_monitor {
+                        monitor_rx = Some(monitor_tx.subscribe());
+                    }
 
                     if client.should_close {
                         cleanup_client(&pubsub, &client).await;
@@ -178,7 +194,7 @@ async fn handle_connection(
             }
         };
 
-        // Wait for data from either TCP or pub/sub, with optional timeout
+        // Wait for data from either TCP, pub/sub, or monitor, with optional timeout
         tokio::select! {
             result = async {
                 if let Some(dur) = timeout_duration {
@@ -196,10 +212,7 @@ async fn handle_connection(
                         return Ok(());
                     }
                     Ok(_) => {
-                        // Protect against protocol desync / too big inline request.
-                        // Check if the first CRLF-delimited line is within reasonable bounds.
                         if buf.len() > 64 * 1024 {
-                            // Check if we have a CRLF in the first 64KB
                             let has_early_crlf = buf[..std::cmp::min(buf.len(), 64 * 1024)]
                                 .windows(2)
                                 .any(|w| w == b"\r\n");
@@ -218,8 +231,19 @@ async fn handle_connection(
                 }
             }
             Some(msg) = pubsub_rx.recv() => {
-                // Forward pub/sub message to the client
                 stream.write_all(&msg.serialize()).await?;
+            }
+            msg = async {
+                if let Some(ref mut rx) = monitor_rx {
+                    rx.recv().await.ok()
+                } else {
+                    std::future::pending::<Option<String>>().await
+                }
+            } => {
+                if let Some(line) = msg {
+                    let resp = RespValue::SimpleString(line);
+                    stream.write_all(&resp.serialize()).await?;
+                }
             }
         }
     }
@@ -257,6 +281,7 @@ async fn process_command(
     change_counter: &SharedChangeCounter,
     key_watcher: &SharedKeyWatcher,
     script_cache: &ScriptCache,
+    monitor_tx: &MonitorSender,
 ) -> RespValue {
     let items = match value {
         RespValue::Array(Some(items)) if !items.is_empty() => items,
@@ -269,6 +294,26 @@ async fn process_command(
     };
 
     let args = &items[1..];
+
+    // Broadcast to MONITOR clients (skip MONITOR command itself and AUTH for security)
+    if cmd_name != "MONITOR" && cmd_name != "AUTH" && monitor_tx.receiver_count() > 0 {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = timestamp.as_secs();
+        let micros = timestamp.subsec_micros();
+        let args_str: Vec<String> = args.iter()
+            .filter_map(|a| a.to_string_lossy())
+            .map(|s| format!("\"{}\"", s))
+            .collect();
+        let line = format!(
+            "{secs}.{micros:06} [{}] \"{}\" {}",
+            client.db_index,
+            cmd_name.to_lowercase(),
+            args_str.join(" ")
+        );
+        let _ = monitor_tx.send(line);
+    }
 
     // Check authentication
     if !client.authenticated && cmd_name != "AUTH" && cmd_name != "QUIT" && cmd_name != "HELLO" {

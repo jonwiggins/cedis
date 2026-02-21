@@ -143,6 +143,8 @@ pub async fn dispatch(
         "LMPOP" => list::cmd_lmpop(args, store, client).await,
         "BLPOP" => list::cmd_blpop(args, store, client, key_watcher).await,
         "BRPOP" => list::cmd_brpop(args, store, client, key_watcher).await,
+        "BLMOVE" => list::cmd_blmove(args, store, client, key_watcher).await,
+        "BLMPOP" => list::cmd_blmpop(args, store, client, key_watcher).await,
 
         // Hashes
         "HSET" => hash::cmd_hset(args, store, client).await,
@@ -307,12 +309,26 @@ pub async fn dispatch(
         // Stubs for compatibility
         "FUNCTION" => RespValue::ok(),
         "HELLO" => server_cmd::cmd_hello(args),
-        "WAIT" => RespValue::integer(0),
+        "WAIT" => {
+            // WAIT numreplicas timeout
+            if args.len() != 2 {
+                return wrong_arg_count("wait");
+            }
+            match arg_to_i64(&args[0]) {
+                Some(n) if n >= 0 => {},
+                _ => return RespValue::error("ERR value is not an integer or out of range"),
+            }
+            match arg_to_i64(&args[1]) {
+                Some(t) if t >= 0 => {},
+                _ => return RespValue::error("ERR timeout is not an integer or out of range"),
+            }
+            // No replication support: 0 replicas acknowledged
+            RespValue::integer(0)
+        }
         "FCALL" | "FCALL_RO" => RespValue::error("ERR No matching script. Please use FUNCTION LOAD."),
-        "BLMPOP" => {
-            // BLMPOP timeout numkeys key [key ...] LEFT|RIGHT
-            // Stub: Return null (timeout immediately)
-            RespValue::null_array()
+        "MONITOR" => {
+            client.in_monitor = true;
+            RespValue::ok()
         }
         "DIGEST" => {
             // DIGEST key - return a 40-char hex SHA1 hash of the key's serialized value

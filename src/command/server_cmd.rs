@@ -302,10 +302,212 @@ pub fn cmd_time() -> RespValue {
     ])
 }
 
+/// Build a COMMAND INFO entry for a single command.
+/// Format: [name, arity, [flags...], first_key, last_key, step]
+fn command_info_entry(name: &str, arity: i64, flags: &[&str], first_key: i64, last_key: i64, step: i64) -> RespValue {
+    let flag_arr: Vec<RespValue> = flags.iter()
+        .map(|f| RespValue::SimpleString(f.to_string()))
+        .collect();
+    RespValue::array(vec![
+        RespValue::bulk_string(name.as_bytes().to_vec()),
+        RespValue::integer(arity),
+        RespValue::array(flag_arr),
+        RespValue::integer(first_key),
+        RespValue::integer(last_key),
+        RespValue::integer(step),
+    ])
+}
+
+/// Return command info for known commands.
+fn get_command_info(name: &str) -> Option<RespValue> {
+    // (arity, flags, first_key, last_key, step)
+    let info = match name {
+        "get" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "set" => (-3, vec!["write", "denyoom"], 1, 1, 1),
+        "del" => (-2, vec!["write"], 1, -1, 1),
+        "mget" => (-2, vec!["readonly", "fast"], 1, -1, 1),
+        "mset" => (-3, vec!["write", "denyoom"], 1, -1, 2),
+        "incr" => (2, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "decr" => (2, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "incrby" => (3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "decrby" => (3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "incrbyfloat" => (3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "append" => (3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "strlen" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "exists" => (-2, vec!["readonly", "fast"], 1, -1, 1),
+        "expire" => (3, vec!["write", "fast"], 1, 1, 1),
+        "pexpire" => (3, vec!["write", "fast"], 1, 1, 1),
+        "expireat" => (3, vec!["write", "fast"], 1, 1, 1),
+        "pexpireat" => (3, vec!["write", "fast"], 1, 1, 1),
+        "ttl" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "pttl" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "persist" => (2, vec!["write", "fast"], 1, 1, 1),
+        "type" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "rename" => (3, vec!["write"], 1, 2, 1),
+        "renamenx" => (3, vec!["write", "fast"], 1, 2, 1),
+        "keys" => (2, vec!["readonly", "sort_for_script"], 0, 0, 0),
+        "scan" => (-2, vec!["readonly"], 0, 0, 0),
+        "ping" => (-1, vec!["fast", "stale"], 0, 0, 0),
+        "echo" => (2, vec!["fast"], 0, 0, 0),
+        "quit" => (1, vec!["fast"], 0, 0, 0),
+        "select" => (2, vec!["fast"], 0, 0, 0),
+        "auth" => (-2, vec!["fast", "stale", "no-auth"], 0, 0, 0),
+        "dbsize" => (1, vec!["readonly", "fast"], 0, 0, 0),
+        "flushdb" => (-1, vec!["write"], 0, 0, 0),
+        "flushall" => (-1, vec!["write"], 0, 0, 0),
+        "info" => (-1, vec!["stale", "fast"], 0, 0, 0),
+        "config" => (-2, vec!["admin", "stale"], 0, 0, 0),
+        "time" => (1, vec!["random", "fast", "stale"], 0, 0, 0),
+        "command" => (-1, vec!["random", "stale"], 0, 0, 0),
+        "client" => (-2, vec!["admin", "stale"], 0, 0, 0),
+        "lpush" => (-3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "rpush" => (-3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "lpop" => (-2, vec!["write", "fast"], 1, 1, 1),
+        "rpop" => (-2, vec!["write", "fast"], 1, 1, 1),
+        "llen" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "lrange" => (4, vec!["readonly"], 1, 1, 1),
+        "lindex" => (3, vec!["readonly"], 1, 1, 1),
+        "lset" => (4, vec!["write", "denyoom"], 1, 1, 1),
+        "linsert" => (5, vec!["write", "denyoom"], 1, 1, 1),
+        "lrem" => (4, vec!["write"], 1, 1, 1),
+        "ltrim" => (4, vec!["write"], 1, 1, 1),
+        "blpop" => (-3, vec!["write", "noscript"], 1, -2, 1),
+        "brpop" => (-3, vec!["write", "noscript"], 1, -2, 1),
+        "hset" => (-4, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "hget" => (3, vec!["readonly", "fast"], 1, 1, 1),
+        "hdel" => (-3, vec!["write", "fast"], 1, 1, 1),
+        "hgetall" => (2, vec!["readonly"], 1, 1, 1),
+        "hlen" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "hexists" => (3, vec!["readonly", "fast"], 1, 1, 1),
+        "hkeys" => (2, vec!["readonly", "sort_for_script"], 1, 1, 1),
+        "hvals" => (2, vec!["readonly", "sort_for_script"], 1, 1, 1),
+        "hmset" => (-4, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "hmget" => (-3, vec!["readonly", "fast"], 1, 1, 1),
+        "hincrby" => (4, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "hincrbyfloat" => (4, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "sadd" => (-3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "srem" => (-3, vec!["write", "fast"], 1, 1, 1),
+        "sismember" => (3, vec!["readonly", "fast"], 1, 1, 1),
+        "smembers" => (2, vec!["readonly", "sort_for_script"], 1, 1, 1),
+        "scard" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "spop" => (-2, vec!["write", "fast"], 1, 1, 1),
+        "srandmember" => (-2, vec!["readonly", "random"], 1, 1, 1),
+        "sunion" => (-2, vec!["readonly", "sort_for_script"], 1, -1, 1),
+        "sinter" => (-2, vec!["readonly", "sort_for_script"], 1, -1, 1),
+        "sdiff" => (-2, vec!["readonly", "sort_for_script"], 1, -1, 1),
+        "sunionstore" => (-3, vec!["write", "denyoom"], 1, -1, 1),
+        "sinterstore" => (-3, vec!["write", "denyoom"], 1, -1, 1),
+        "sdiffstore" => (-3, vec!["write", "denyoom"], 1, -1, 1),
+        "zadd" => (-4, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "zrem" => (-3, vec!["write", "fast"], 1, 1, 1),
+        "zscore" => (3, vec!["readonly", "fast"], 1, 1, 1),
+        "zrank" => (3, vec!["readonly", "fast"], 1, 1, 1),
+        "zrevrank" => (3, vec!["readonly", "fast"], 1, 1, 1),
+        "zcard" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "zcount" => (4, vec!["readonly", "fast"], 1, 1, 1),
+        "zrange" => (-4, vec!["readonly"], 1, 1, 1),
+        "zrevrange" => (-4, vec!["readonly"], 1, 1, 1),
+        "zincrby" => (4, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "multi" => (1, vec!["fast"], 0, 0, 0),
+        "exec" => (1, vec!["noscript", "slow"], 0, 0, 0),
+        "discard" => (1, vec!["fast", "noscript"], 0, 0, 0),
+        "watch" => (-2, vec!["fast"], 1, -1, 1),
+        "unwatch" => (1, vec!["fast"], 0, 0, 0),
+        "subscribe" => (-2, vec!["pubsub", "noscript"], 0, 0, 0),
+        "unsubscribe" => (-1, vec!["pubsub", "noscript"], 0, 0, 0),
+        "publish" => (3, vec!["pubsub", "fast"], 0, 0, 0),
+        "psubscribe" => (-2, vec!["pubsub", "noscript"], 0, 0, 0),
+        "punsubscribe" => (-1, vec!["pubsub", "noscript"], 0, 0, 0),
+        "save" => (1, vec!["admin", "noscript"], 0, 0, 0),
+        "bgsave" => (-1, vec!["admin"], 0, 0, 0),
+        "eval" => (-3, vec!["noscript", "movablekeys"], 0, 0, 0),
+        "evalsha" => (-3, vec!["noscript", "movablekeys"], 0, 0, 0),
+        "wait" => (3, vec!["noscript"], 0, 0, 0),
+        "object" => (-2, vec!["slow"], 2, 2, 1),
+        "debug" => (-2, vec!["admin", "noscript"], 0, 0, 0),
+        "sort" => (-2, vec!["write", "denyoom", "movablekeys"], 1, 1, 1),
+        "dump" => (2, vec!["readonly", "random"], 1, 1, 1),
+        "restore" => (-4, vec!["write", "denyoom"], 1, 1, 1),
+        "copy" => (-3, vec!["write"], 1, 2, 1),
+        "move" => (3, vec!["write", "fast"], 1, 1, 1),
+        "randomkey" => (1, vec!["readonly", "random"], 0, 0, 0),
+        "setnx" => (3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "setex" => (4, vec!["write", "denyoom"], 1, 1, 1),
+        "psetex" => (4, vec!["write", "denyoom"], 1, 1, 1),
+        "getset" => (3, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "getdel" => (2, vec!["write", "fast"], 1, 1, 1),
+        "getex" => (-2, vec!["write", "fast"], 1, 1, 1),
+        "getrange" => (4, vec!["readonly"], 1, 1, 1),
+        "setrange" => (4, vec!["write", "denyoom"], 1, 1, 1),
+        "msetnx" => (-3, vec!["write", "denyoom"], 1, -1, 2),
+        "unlink" => (-2, vec!["write", "fast"], 1, -1, 1),
+        "lmove" => (5, vec!["write", "denyoom"], 1, 2, 1),
+        "blmove" => (6, vec!["write", "denyoom", "noscript"], 1, 2, 1),
+        "rpoplpush" => (3, vec!["write", "denyoom"], 1, 2, 1),
+        "lpos" => (-3, vec!["readonly"], 1, 1, 1),
+        "lmpop" => (-4, vec!["write", "fast"], 0, 0, 0),
+        "blmpop" => (-5, vec!["write", "noscript"], 0, 0, 0),
+        "setbit" => (4, vec!["write", "denyoom"], 1, 1, 1),
+        "getbit" => (3, vec!["readonly", "fast"], 1, 1, 1),
+        "bitcount" => (-2, vec!["readonly"], 1, 1, 1),
+        "bitop" => (-4, vec!["write", "denyoom"], 2, -1, 1),
+        "bitpos" => (-3, vec!["readonly"], 1, 1, 1),
+        "pfadd" => (-2, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "pfcount" => (-2, vec!["readonly"], 1, -1, 1),
+        "pfmerge" => (-2, vec!["write", "denyoom"], 1, -1, 1),
+        "geoadd" => (-5, vec!["write", "denyoom"], 1, 1, 1),
+        "geodist" => (-4, vec!["readonly"], 1, 1, 1),
+        "geopos" => (-2, vec!["readonly"], 1, 1, 1),
+        "geohash" => (-2, vec!["readonly"], 1, 1, 1),
+        "geosearch" => (-7, vec!["readonly"], 1, 1, 1),
+        "xadd" => (-5, vec!["write", "denyoom", "fast"], 1, 1, 1),
+        "xlen" => (2, vec!["readonly", "fast"], 1, 1, 1),
+        "xrange" => (-4, vec!["readonly"], 1, 1, 1),
+        "xrevrange" => (-4, vec!["readonly"], 1, 1, 1),
+        "xread" => (-4, vec!["readonly", "movablekeys"], 0, 0, 0),
+        "swapdb" => (3, vec!["write", "fast"], 0, 0, 0),
+        "hello" => (-1, vec!["fast", "stale"], 0, 0, 0),
+        "reset" => (1, vec!["fast", "stale", "no-auth"], 0, 0, 0),
+        _ => return None,
+    };
+    Some(command_info_entry(name, info.0, &info.1, info.2, info.3, info.4))
+}
+
+/// Collect all known command names for COMMAND LIST.
+fn all_command_names() -> Vec<&'static str> {
+    vec![
+        "get", "set", "del", "mget", "mset", "incr", "decr", "incrby", "decrby",
+        "incrbyfloat", "append", "strlen", "exists", "expire", "pexpire", "expireat",
+        "pexpireat", "ttl", "pttl", "persist", "type", "rename", "renamenx", "keys",
+        "scan", "ping", "echo", "quit", "select", "auth", "dbsize", "flushdb",
+        "flushall", "info", "config", "time", "command", "client", "lpush", "rpush",
+        "lpop", "rpop", "llen", "lrange", "lindex", "lset", "linsert", "lrem",
+        "ltrim", "blpop", "brpop", "hset", "hget", "hdel", "hgetall", "hlen",
+        "hexists", "hkeys", "hvals", "hmset", "hmget", "hincrby", "hincrbyfloat",
+        "sadd", "srem", "sismember", "smembers", "scard", "spop", "srandmember",
+        "sunion", "sinter", "sdiff", "sunionstore", "sinterstore", "sdiffstore",
+        "zadd", "zrem", "zscore", "zrank", "zrevrank", "zcard", "zcount", "zrange",
+        "zrevrange", "zincrby", "multi", "exec", "discard", "watch", "unwatch",
+        "subscribe", "unsubscribe", "publish", "psubscribe", "punsubscribe",
+        "save", "bgsave", "eval", "evalsha", "wait", "object", "debug", "sort",
+        "dump", "restore", "copy", "move", "randomkey", "setnx", "setex", "psetex",
+        "getset", "getdel", "getex", "getrange", "setrange", "msetnx", "unlink",
+        "lmove", "blmove", "rpoplpush", "lpos", "lmpop", "blmpop",
+        "setbit", "getbit", "bitcount", "bitop", "bitpos",
+        "pfadd", "pfcount", "pfmerge", "geoadd", "geodist", "geopos", "geohash",
+        "geosearch", "xadd", "xlen", "xrange", "xrevrange", "xread",
+        "swapdb", "hello", "reset",
+    ]
+}
+
 pub fn cmd_command(args: &[RespValue]) -> RespValue {
     if args.is_empty() {
-        // Return basic command info
-        return RespValue::array(vec![]);
+        // COMMAND with no args: return info for all commands
+        let entries: Vec<RespValue> = all_command_names()
+            .iter()
+            .filter_map(|name| get_command_info(name))
+            .collect();
+        return RespValue::array(entries);
     }
 
     let subcmd = match arg_to_string(&args[0]) {
@@ -314,19 +516,39 @@ pub fn cmd_command(args: &[RespValue]) -> RespValue {
     };
 
     match subcmd.as_str() {
-        "COUNT" => RespValue::integer(100), // approximate
-        "DOCS" => RespValue::array(vec![]),
-        "INFO" => RespValue::array(vec![]),
+        "COUNT" => RespValue::integer(all_command_names().len() as i64),
+        "DOCS" => {
+            // COMMAND DOCS [command ...] - return empty docs for now
+            RespValue::array(vec![])
+        }
+        "INFO" => {
+            // COMMAND INFO command [command ...]
+            let mut results = Vec::new();
+            for arg in &args[1..] {
+                if let Some(name) = arg.to_string_lossy() {
+                    let lower = name.to_lowercase();
+                    match get_command_info(&lower) {
+                        Some(info) => results.push(info),
+                        None => results.push(RespValue::null_bulk_string()),
+                    }
+                }
+            }
+            RespValue::array(results)
+        }
         "GETKEYS" => {
-            // Return keys from the command args
-            // For most commands, the key is the second arg
             if args.len() >= 3 {
                 RespValue::array(vec![args[2].clone()])
             } else {
                 RespValue::array(vec![])
             }
         }
-        "LIST" => RespValue::array(vec![]),
+        "LIST" => {
+            let names: Vec<RespValue> = all_command_names()
+                .iter()
+                .map(|n| RespValue::bulk_string(n.as_bytes().to_vec()))
+                .collect();
+            RespValue::array(names)
+        }
         _ => RespValue::error(format!("ERR unknown subcommand '{subcmd}'")),
     }
 }

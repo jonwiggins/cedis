@@ -859,6 +859,7 @@ pub async fn cmd_lpos(
     store: &SharedStore,
     client: &ClientState,
 ) -> RespValue {
+    // LPOS key element [RANK rank] [COUNT count] [MAXLEN maxlen]
     if args.len() < 2 {
         return wrong_arg_count("lpos");
     }
@@ -871,17 +872,336 @@ pub async fn cmd_lpos(
         None => return RespValue::null_bulk_string(),
     };
 
+    let mut rank: i64 = 1;
+    let mut count: Option<i64> = None;
+    let mut maxlen: usize = 0;
+
+    let mut i = 2;
+    while i < args.len() {
+        let opt = match arg_to_string(&args[i]) {
+            Some(s) => s.to_uppercase(),
+            None => return RespValue::error("ERR syntax error"),
+        };
+        match opt.as_str() {
+            "RANK" => {
+                i += 1;
+                rank = match args.get(i).and_then(arg_to_i64) {
+                    Some(r) if r != 0 => r,
+                    _ => return RespValue::error("ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list"),
+                };
+            }
+            "COUNT" => {
+                i += 1;
+                count = match args.get(i).and_then(arg_to_i64) {
+                    Some(c) if c >= 0 => Some(c),
+                    _ => return RespValue::error("ERR COUNT can't be negative"),
+                };
+            }
+            "MAXLEN" => {
+                i += 1;
+                maxlen = match args.get(i).and_then(arg_to_i64) {
+                    Some(m) if m >= 0 => m as usize,
+                    _ => return RespValue::error("ERR MAXLEN can't be negative"),
+                };
+            }
+            _ => return RespValue::error("ERR syntax error"),
+        }
+        i += 1;
+    }
+
     let mut store = store.write().await;
     let db = store.db(client.db_index);
 
     match db.get(&key) {
         Some(entry) => match &entry.value {
-            RedisValue::List(list) => match list.lpos(&element) {
-                Some(pos) => RespValue::integer(pos as i64),
-                None => RespValue::null_bulk_string(),
-            },
+            RedisValue::List(list) => {
+                let positions = list.lpos(&element, rank, count, maxlen);
+                if count.is_some() {
+                    // COUNT specified: always return array
+                    let resp: Vec<RespValue> = positions.iter().map(|&p| RespValue::integer(p as i64)).collect();
+                    RespValue::array(resp)
+                } else {
+                    // No COUNT: return single value or null
+                    match positions.first() {
+                        Some(&pos) => RespValue::integer(pos as i64),
+                        None => RespValue::null_bulk_string(),
+                    }
+                }
+            }
             _ => wrong_type_error(),
         },
-        None => RespValue::null_bulk_string(),
+        None => {
+            if count.is_some() {
+                RespValue::array(vec![])
+            } else {
+                RespValue::null_bulk_string()
+            }
+        }
     }
+}
+
+pub async fn cmd_blmove(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
+) -> RespValue {
+    // BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout
+    if args.len() != 5 {
+        return wrong_arg_count("blmove");
+    }
+    let src = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+    let dst = match arg_to_string(&args[1]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+    let wherefrom = match arg_to_string(&args[2]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR syntax error"),
+    };
+    let whereto = match arg_to_string(&args[3]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR syntax error"),
+    };
+    if !matches!(wherefrom.as_str(), "LEFT" | "RIGHT") || !matches!(whereto.as_str(), "LEFT" | "RIGHT") {
+        return RespValue::error("ERR syntax error");
+    }
+
+    let timeout_secs = match arg_to_i64(&args[4]) {
+        Some(t) if t >= 0 => t as u64,
+        _ => return RespValue::error("ERR timeout is not a float or out of range"),
+    };
+
+    // Try immediate move first
+    {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        if let Some(result) = try_lmove(db, &src, &dst, &wherefrom, &whereto) {
+            return result;
+        }
+    }
+
+    let timeout_dur = if timeout_secs == 0 {
+        Duration::from_secs(300)
+    } else {
+        Duration::from_secs(timeout_secs)
+    };
+
+    let keys = vec![src.clone()];
+    let notify = {
+        let mut watcher = key_watcher.write().await;
+        watcher.register_many(&keys)
+    };
+
+    let notified = tokio::select! {
+        _ = notify.notified() => true,
+        _ = tokio::time::sleep(timeout_dur) => false,
+    };
+
+    {
+        let mut watcher = key_watcher.write().await;
+        watcher.unregister_many(&keys, &notify);
+    }
+
+    if !notified {
+        return RespValue::null_bulk_string();
+    }
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+    try_lmove(db, &src, &dst, &wherefrom, &whereto).unwrap_or_else(RespValue::null_bulk_string)
+}
+
+pub async fn cmd_blmpop(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
+) -> RespValue {
+    // BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]
+    if args.len() < 4 {
+        return wrong_arg_count("blmpop");
+    }
+
+    let timeout_secs = match arg_to_i64(&args[0]) {
+        Some(t) if t >= 0 => t as u64,
+        _ => return RespValue::error("ERR timeout is not a float or out of range"),
+    };
+
+    let numkeys = match arg_to_i64(&args[1]) {
+        Some(n) if n > 0 => n as usize,
+        _ => return RespValue::error("ERR numkeys must be positive"),
+    };
+
+    if args.len() < 2 + numkeys + 1 {
+        return wrong_arg_count("blmpop");
+    }
+
+    let keys: Vec<String> = args[2..2 + numkeys]
+        .iter()
+        .filter_map(arg_to_string)
+        .collect();
+
+    let direction_idx = 2 + numkeys;
+    let direction = match arg_to_string(&args[direction_idx]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR syntax error"),
+    };
+    if direction != "LEFT" && direction != "RIGHT" {
+        return RespValue::error("ERR syntax error");
+    }
+
+    let mut count = 1usize;
+    let mut i = direction_idx + 1;
+    while i < args.len() {
+        if let Some(opt) = arg_to_string(&args[i]) {
+            if opt.to_uppercase() == "COUNT" && i + 1 < args.len() {
+                count = arg_to_i64(&args[i + 1]).unwrap_or(1).max(1) as usize;
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+
+    // Try immediate pop first
+    {
+        let mut store_w = store.write().await;
+        let db = store_w.db(client.db_index);
+        if let Some(result) = try_lmpop(db, &keys, &direction, count) {
+            return result;
+        }
+    }
+
+    let timeout_dur = if timeout_secs == 0 {
+        Duration::from_secs(300)
+    } else {
+        Duration::from_secs(timeout_secs)
+    };
+
+    let notify = {
+        let mut watcher = key_watcher.write().await;
+        watcher.register_many(&keys)
+    };
+
+    let notified = tokio::select! {
+        _ = notify.notified() => true,
+        _ = tokio::time::sleep(timeout_dur) => false,
+    };
+
+    {
+        let mut watcher = key_watcher.write().await;
+        watcher.unregister_many(&keys, &notify);
+    }
+
+    if !notified {
+        return RespValue::null_array();
+    }
+
+    let mut store_w = store.write().await;
+    let db = store_w.db(client.db_index);
+    try_lmpop(db, &keys, &direction, count).unwrap_or_else(RespValue::null_array)
+}
+
+/// Try to LMOVE from src to dst. Returns None if source is empty/missing.
+fn try_lmove(
+    db: &mut crate::store::Database,
+    src: &str,
+    dst: &str,
+    wherefrom: &str,
+    whereto: &str,
+) -> Option<RespValue> {
+    let value = match db.get_mut(src) {
+        Some(entry) => match &mut entry.value {
+            RedisValue::List(list) => match wherefrom {
+                "LEFT" => list.lpop(),
+                "RIGHT" => list.rpop(),
+                _ => return Some(RespValue::error("ERR syntax error")),
+            },
+            _ => return Some(wrong_type_error()),
+        },
+        None => return None,
+    };
+
+    let value = value?;
+
+    // Clean up empty source before creating destination (handles src == dst)
+    let src_empty = match db.get(src) {
+        Some(entry) => match &entry.value {
+            RedisValue::List(list) => list.is_empty(),
+            _ => false,
+        },
+        None => false,
+    };
+    if src_empty {
+        db.del(src);
+    }
+
+    let list = match get_or_create_list(db, dst) {
+        Ok(l) => l,
+        Err(e) => return Some(e),
+    };
+
+    match whereto {
+        "LEFT" => list.lpush(value.clone()),
+        "RIGHT" => list.rpush(value.clone()),
+        _ => return Some(RespValue::error("ERR syntax error")),
+    }
+
+    Some(RespValue::bulk_string(value))
+}
+
+/// Try to LMPOP from the first non-empty list key. Returns None if all empty.
+fn try_lmpop(
+    db: &mut crate::store::Database,
+    keys: &[String],
+    direction: &str,
+    count: usize,
+) -> Option<RespValue> {
+    for key in keys {
+        let list_len = match db.get(key) {
+            Some(entry) => match &entry.value {
+                RedisValue::List(list) => list.len(),
+                _ => continue,
+            },
+            None => continue,
+        };
+        if list_len == 0 {
+            continue;
+        }
+
+        let entry = db.get_mut(key).unwrap();
+        let list = match &mut entry.value {
+            RedisValue::List(l) => l,
+            _ => continue,
+        };
+
+        let mut results = Vec::new();
+        for _ in 0..count {
+            let val = if direction == "LEFT" {
+                list.lpop()
+            } else {
+                list.rpop()
+            };
+            match val {
+                Some(v) => results.push(RespValue::bulk_string(v)),
+                None => break,
+            }
+        }
+
+        if !results.is_empty() {
+            let should_del = list.is_empty();
+            let key_clone = key.clone();
+            if should_del {
+                db.del(&key_clone);
+            }
+            return Some(RespValue::array(vec![
+                RespValue::bulk_string(key_clone.into_bytes()),
+                RespValue::array(results),
+            ]));
+        }
+    }
+    None
 }

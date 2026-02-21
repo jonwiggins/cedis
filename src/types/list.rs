@@ -133,8 +133,60 @@ impl RedisList {
         }
     }
 
-    pub fn lpos(&self, value: &[u8]) -> Option<usize> {
-        self.data.iter().position(|v| v.as_slice() == value)
+    pub fn lpos(&self, value: &[u8], rank: i64, count: Option<i64>, maxlen: usize) -> Vec<usize> {
+        let len = self.data.len();
+        let limit = if maxlen == 0 { len } else { maxlen.min(len) };
+
+        let mut results = Vec::new();
+        let max_count = count.unwrap_or(1);
+        // If count is 0, return ALL matches
+        let unlimited = max_count == 0;
+
+        if rank >= 0 {
+            // Forward scan, skip (rank-1) matches
+            let skip = if rank == 0 { 0 } else { (rank - 1) as usize };
+            let mut skipped = 0;
+            let mut scanned = 0;
+            for (i, v) in self.data.iter().enumerate() {
+                if scanned >= limit {
+                    break;
+                }
+                scanned += 1;
+                if v.as_slice() == value {
+                    if skipped < skip {
+                        skipped += 1;
+                        continue;
+                    }
+                    results.push(i);
+                    if !unlimited && results.len() >= max_count as usize {
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Reverse scan
+            let skip = ((-rank) - 1) as usize;
+            let mut skipped = 0;
+            let mut scanned = 0;
+            for i in (0..len).rev() {
+                if scanned >= limit {
+                    break;
+                }
+                scanned += 1;
+                if self.data[i].as_slice() == value {
+                    if skipped < skip {
+                        skipped += 1;
+                        continue;
+                    }
+                    results.push(i);
+                    if !unlimited && results.len() >= max_count as usize {
+                        break;
+                    }
+                }
+            }
+        }
+
+        results
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Vec<u8>> {
