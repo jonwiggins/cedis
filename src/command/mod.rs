@@ -34,8 +34,22 @@ pub async fn dispatch(
     key_watcher: &SharedKeyWatcher,
     script_cache: &ScriptCache,
 ) -> RespValue {
-    // If in MULTI mode and this isn't EXEC/DISCARD/MULTI, queue the command
-    if client.in_multi && !matches!(cmd_name, "EXEC" | "DISCARD" | "MULTI") {
+    // If in MULTI mode and this isn't EXEC/DISCARD/MULTI/WATCH/UNWATCH, queue the command
+    if client.in_multi && !matches!(cmd_name, "EXEC" | "DISCARD" | "MULTI" | "WATCH" | "UNWATCH") {
+        if !is_known_command(cmd_name) {
+            client.multi_error = true;
+            let args_preview: Vec<String> = args
+                .iter()
+                .take(3)
+                .filter_map(|a| a.to_string_lossy())
+                .map(|s| format!("'{s}'"))
+                .collect();
+            return RespValue::error(format!(
+                "ERR unknown command '{}', with args beginning with: {}",
+                cmd_name,
+                args_preview.join(" ")
+            ));
+        }
         client.multi_queue.push((cmd_name.to_string(), args.to_vec()));
         return RespValue::SimpleString("QUEUED".to_string());
     }
@@ -54,7 +68,7 @@ pub async fn dispatch(
 
         // Server
         "INFO" => server_cmd::cmd_info(args, store, config).await,
-        "CONFIG" => server_cmd::cmd_config(args, config).await,
+        "CONFIG" => server_cmd::cmd_config(args, config, store).await,
         "TIME" => server_cmd::cmd_time(),
         "COMMAND" => server_cmd::cmd_command(args),
         "CLIENT" => server_cmd::cmd_client(args, client),
@@ -300,6 +314,102 @@ pub async fn dispatch(
             // Stub: Return null (timeout immediately)
             RespValue::null_array()
         }
+        "DIGEST" => {
+            // DIGEST key - return a 40-char hex SHA1 hash of the key's serialized value
+            if args.len() != 1 {
+                return wrong_arg_count("digest");
+            }
+            let key = match arg_to_string(&args[0]) {
+                Some(k) => k,
+                None => return RespValue::null_bulk_string(),
+            };
+            let store_r = store.read().await;
+            let db = &store_r.databases[client.db_index];
+            match db.get_entry(&key) {
+                Some(entry) => {
+                    // Type check: DIGEST only works on strings
+                    match &entry.value {
+                        crate::types::RedisValue::String(s) => {
+                            let hash = digest_hash(s.as_bytes());
+                            RespValue::bulk_string(hash.into_bytes())
+                        }
+                        _ => wrong_type_error(),
+                    }
+                }
+                None => RespValue::null_bulk_string(),
+            }
+        }
+        "DELEX" => {
+            // DELEX key [condition value] - Delete with optional conditions (Redis 8.0+)
+            // Conditions: IFEQ, IFNE, IFDEQ, IFDNE
+            if args.is_empty() || args.len() == 2 || args.len() > 3 {
+                return wrong_arg_count("delex");
+            }
+            let key = match arg_to_string(&args[0]) {
+                Some(k) => k,
+                None => return RespValue::integer(0),
+            };
+
+            let mut store_w = store.write().await;
+            let db = store_w.db(client.db_index);
+
+            // Unconditional delete (no condition args)
+            if args.len() == 1 {
+                if db.del(&key) {
+                    return RespValue::integer(1);
+                } else {
+                    return RespValue::integer(0);
+                }
+            }
+
+            // Conditional delete
+            let condition = match arg_to_string(&args[1]) {
+                Some(c) => c.to_uppercase(),
+                None => return RespValue::error("ERR Invalid condition"),
+            };
+            let cmp_val = match crate::command::arg_to_bytes(&args[2]) {
+                Some(v) => v.to_vec(),
+                None => return RespValue::error("ERR invalid value"),
+            };
+
+            let entry = db.get(&key);
+            let should_delete = match entry {
+                None => false, // Key doesn't exist: never delete
+                Some(entry) => match &entry.value {
+                    crate::types::RedisValue::String(s) => {
+                        match condition.as_str() {
+                            "IFEQ" => s.as_bytes() == cmp_val.as_slice(),
+                            "IFNE" => s.as_bytes() != cmp_val.as_slice(),
+                            "IFDEQ" => {
+                                let cmp_str = String::from_utf8_lossy(&cmp_val);
+                                if !is_valid_digest(&cmp_str) {
+                                    return RespValue::error("ERR The digest must be exactly 16 hexadecimal characters");
+                                }
+                                let digest = digest_hash(s.as_bytes());
+                                digest.eq_ignore_ascii_case(&cmp_str)
+                            }
+                            "IFDNE" => {
+                                let cmp_str = String::from_utf8_lossy(&cmp_val);
+                                if !is_valid_digest(&cmp_str) {
+                                    return RespValue::error("ERR The digest must be exactly 16 hexadecimal characters");
+                                }
+                                let digest = digest_hash(s.as_bytes());
+                                !digest.eq_ignore_ascii_case(&cmp_str)
+                            }
+                            _ => return RespValue::error("ERR Invalid condition"),
+                        }
+                    }
+                    _ => return RespValue::error("ERR DELEX only supports string keys"),
+                },
+            };
+
+            if should_delete {
+                db.del(&key);
+                RespValue::integer(1)
+            } else {
+                RespValue::integer(0)
+            }
+        }
         "PFSELFTEST" => RespValue::ok(),
         "PFDEBUG" => {
             // PFDEBUG encoding key -> return "sparse" or "dense"
@@ -311,10 +421,55 @@ pub async fn dispatch(
         }
         "SUBSTR" => string::cmd_getrange(args, store, client).await,
         "MEMORY" => {
-            if args.first().and_then(|a| a.to_string_lossy()).map(|s| s.to_uppercase()).as_deref() == Some("USAGE") {
-                RespValue::integer(0)
-            } else {
-                RespValue::error("ERR unknown MEMORY subcommand")
+            let sub = args.first().and_then(|a| a.to_string_lossy()).map(|s| s.to_uppercase()).unwrap_or_default();
+            match sub.as_str() {
+                "USAGE" => {
+                    if let Some(key_val) = args.get(1).and_then(|a| a.to_string_lossy()) {
+                        let store_r = store.read().await;
+                        let db = &store_r.databases[client.db_index];
+                        match db.get_entry(&key_val) {
+                            Some(entry) => {
+                                // Match Redis's memory accounting:
+                                // dictEntry (24) + key SDS header+data (key_len+1) + robj (16)
+                                let key_overhead = 24 + key_val.len() + 1 + 16;
+                                let value_size = match &entry.value {
+                                    crate::types::RedisValue::String(s) => {
+                                        if s.as_i64().is_some() {
+                                            0 // Integer stored in robj->ptr
+                                        } else if s.len() <= 44 {
+                                            s.len() + 1 // Embstr: data embedded in robj allocation
+                                        } else {
+                                            8 + s.len() + 1 // Raw: SDS header + data + null
+                                        }
+                                    }
+                                    crate::types::RedisValue::List(l) => {
+                                        let elem_bytes: usize = l.iter().map(|v| v.len() + 11).sum();
+                                        128 + elem_bytes
+                                    }
+                                    crate::types::RedisValue::Hash(h) => {
+                                        let field_bytes: usize = h.iter().map(|(k, v)| k.len() + v.len() + 24).sum();
+                                        64 + field_bytes
+                                    }
+                                    crate::types::RedisValue::Set(s) => {
+                                        let mem: usize = s.iter().map(|m| m.len() + 16).sum();
+                                        64 + mem
+                                    }
+                                    crate::types::RedisValue::SortedSet(z) => {
+                                        let mem: usize = z.iter().map(|(m, _)| m.len() + 40).sum();
+                                        128 + mem
+                                    }
+                                    _ => 64,
+                                };
+                                RespValue::integer((key_overhead + value_size) as i64)
+                            }
+                            None => RespValue::null_bulk_string(),
+                        }
+                    } else {
+                        RespValue::error("ERR wrong number of arguments for 'memory|usage' command")
+                    }
+                }
+                "DOCTOR" | "MALLOC-STATS" | "PURGE" | "STATS" | "HELP" => RespValue::ok(),
+                _ => RespValue::error("ERR unknown MEMORY subcommand"),
             }
         }
         "SLOWLOG" => RespValue::array(vec![]),
@@ -368,6 +523,61 @@ pub async fn dispatch(
             ))
         }
     }
+}
+
+/// Check if a command name is known (for MULTI queueing error detection).
+fn is_known_command(cmd: &str) -> bool {
+    matches!(cmd,
+        "PING" | "ECHO" | "QUIT" | "SELECT" | "AUTH" | "DBSIZE" | "FLUSHDB" | "FLUSHALL" | "SWAPDB" |
+        "INFO" | "CONFIG" | "TIME" | "COMMAND" | "CLIENT" | "DEBUG" | "RESET" |
+        "GET" | "SET" | "GETEX" | "GETSET" | "MGET" | "MSET" | "MSETNX" | "APPEND" | "STRLEN" | "LCS" |
+        "INCR" | "DECR" | "INCRBY" | "DECRBY" | "INCRBYFLOAT" | "SETNX" | "SETEX" | "PSETEX" |
+        "GETRANGE" | "SETRANGE" | "GETDEL" |
+        "LPUSH" | "RPUSH" | "LPOP" | "RPOP" | "LLEN" | "LRANGE" | "LINDEX" | "LSET" | "LINSERT" |
+        "LREM" | "LTRIM" | "RPOPLPUSH" | "LMOVE" | "LPOS" | "LMPOP" | "BLPOP" | "BRPOP" | "BLMOVE" |
+        "HSET" | "HGET" | "HDEL" | "HEXISTS" | "HLEN" | "HKEYS" | "HVALS" | "HGETALL" | "HMSET" |
+        "HMGET" | "HINCRBY" | "HINCRBYFLOAT" | "HSETNX" | "HRANDFIELD" | "HSCAN" | "HSTRLEN" | "HGETDEL" |
+        "SADD" | "SREM" | "SISMEMBER" | "SMISMEMBER" | "SMEMBERS" | "SCARD" | "SPOP" | "SRANDMEMBER" |
+        "SUNION" | "SINTER" | "SDIFF" | "SUNIONSTORE" | "SINTERSTORE" | "SDIFFSTORE" | "SMOVE" | "SSCAN" | "SINTERCARD" |
+        "ZADD" | "ZREM" | "ZSCORE" | "ZRANK" | "ZREVRANK" | "ZCARD" | "ZCOUNT" | "ZRANGE" | "ZREVRANGE" |
+        "ZRANGEBYSCORE" | "ZREVRANGEBYSCORE" | "ZRANGEBYLEX" | "ZREVRANGEBYLEX" | "ZINCRBY" |
+        "ZUNIONSTORE" | "ZINTERSTORE" | "ZRANDMEMBER" | "ZSCAN" | "ZPOPMIN" | "ZPOPMAX" | "ZMSCORE" |
+        "ZLEXCOUNT" | "ZREMRANGEBYSCORE" | "ZREMRANGEBYLEX" | "ZREMRANGEBYRANK" |
+        "ZUNION" | "ZINTER" | "ZDIFF" | "ZDIFFSTORE" | "ZINTERCARD" | "ZMPOP" |
+        "BZPOPMIN" | "BZPOPMAX" | "BZMPOP" |
+        "XADD" | "XLEN" | "XRANGE" | "XREVRANGE" | "XREAD" | "XTRIM" | "XGROUP" | "XACK" |
+        "XCLAIM" | "XPENDING" | "XREADGROUP" | "XDEL" | "XINFO" |
+        "SETBIT" | "GETBIT" | "BITCOUNT" | "BITOP" | "BITPOS" | "BITFIELD" | "BITFIELD_RO" |
+        "PFADD" | "PFCOUNT" | "PFMERGE" |
+        "GEOADD" | "GEODIST" | "GEOPOS" | "GEOHASH" | "GEOSEARCH" | "GEOSEARCHSTORE" |
+        "GEORADIUS" | "GEORADIUSBYMEMBER" | "GEOMEMBERS" |
+        "DEL" | "UNLINK" | "EXISTS" | "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" |
+        "EXPIRETIME" | "PEXPIRETIME" | "TTL" | "PTTL" | "PERSIST" | "TYPE" | "RENAME" | "RENAMENX" |
+        "KEYS" | "SCAN" | "RANDOMKEY" | "OBJECT" | "SORT" | "SORT_RO" | "COPY" | "MOVE" | "DUMP" | "RESTORE" |
+        "SUBSCRIBE" | "UNSUBSCRIBE" | "PUBLISH" | "PSUBSCRIBE" | "PUNSUBSCRIBE" | "PUBSUB" |
+        "MULTI" | "EXEC" | "DISCARD" | "WATCH" | "UNWATCH" |
+        "SAVE" | "BGSAVE" | "BGREWRITEAOF" | "LASTSAVE" |
+        "EVAL" | "EVALSHA" | "SCRIPT" |
+        "FUNCTION" | "HELLO" | "WAIT" | "FCALL" | "FCALL_RO" | "BLMPOP" |
+        "PFSELFTEST" | "PFDEBUG" | "SUBSTR" | "MEMORY" | "SLOWLOG" | "LATENCY" | "CLUSTER" |
+        "WAITAOF" | "ACL" | "REPLICAOF" | "SLAVEOF" | "SYNC" | "PSYNC" |
+        "DIGEST" | "DELEX" | "MSETEX"
+    )
+}
+
+/// Compute a 64-bit digest hash for the DIGEST command and IFDEQ/IFDNE conditions.
+/// Returns a 16-character lowercase hex string.
+pub fn digest_hash(data: &[u8]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+    let mut hasher = DefaultHasher::new();
+    hasher.write(data);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Validate a digest string: must be exactly 16 hex characters.
+pub fn is_valid_digest(s: &str) -> bool {
+    s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Extract string bytes from a RespValue argument.

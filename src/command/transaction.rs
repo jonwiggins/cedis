@@ -95,6 +95,8 @@ pub fn cmd_discard(client: &mut ClientState) -> RespValue {
     client.in_multi = false;
     client.multi_queue.clear();
     client.multi_error = false;
+    client.watched_keys.clear();
+    client.watch_dirty = false;
     RespValue::ok()
 }
 

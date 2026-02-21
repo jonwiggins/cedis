@@ -39,13 +39,17 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
         None => return RespValue::error("ERR invalid value"),
     };
 
-    // Parse options: EX, PX, NX, XX, KEEPTTL, GET
+    // Parse options: EX, PX, NX, XX, KEEPTTL, GET, IFEQ, IFNE, IFDEQ, IFDNE
     let mut ex: Option<u64> = None;
     let mut px: Option<u64> = None;
     let mut nx = false;
     let mut xx = false;
     let mut keepttl = false;
     let mut get = false;
+    let mut ifeq: Option<Vec<u8>> = None;
+    let mut ifne: Option<Vec<u8>> = None;
+    let mut ifdeq: Option<String> = None;
+    let mut ifdne: Option<String> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -100,6 +104,34 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
             "XX" => xx = true,
             "KEEPTTL" => keepttl = true,
             "GET" => get = true,
+            "IFEQ" => {
+                i += 1;
+                ifeq = args.get(i).and_then(arg_to_bytes).map(|v| v.to_vec());
+                if ifeq.is_none() {
+                    return RespValue::error("ERR syntax error");
+                }
+            }
+            "IFNE" => {
+                i += 1;
+                ifne = args.get(i).and_then(arg_to_bytes).map(|v| v.to_vec());
+                if ifne.is_none() {
+                    return RespValue::error("ERR syntax error");
+                }
+            }
+            "IFDEQ" => {
+                i += 1;
+                ifdeq = args.get(i).and_then(arg_to_string);
+                if ifdeq.is_none() {
+                    return RespValue::error("ERR syntax error");
+                }
+            }
+            "IFDNE" => {
+                i += 1;
+                ifdne = args.get(i).and_then(arg_to_string);
+                if ifdne.is_none() {
+                    return RespValue::error("ERR syntax error");
+                }
+            }
             _ => return RespValue::error("ERR syntax error"),
         }
         i += 1;
@@ -120,6 +152,49 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
     } else {
         None
     };
+
+    // IFEQ/IFNE/IFDEQ/IFDNE checks (Redis 8.0+)
+    if ifeq.is_some() || ifne.is_some() || ifdeq.is_some() || ifdne.is_some() {
+        let current_bytes = match db.get(&key) {
+            Some(entry) => match &entry.value {
+                RedisValue::String(s) => Some(s.as_bytes().to_vec()),
+                _ => return wrong_type_error(),
+            },
+            None => None,
+        };
+
+        let condition_met = if let Some(ref eq_val) = ifeq {
+            // IFEQ: key must exist and value must equal
+            current_bytes.as_ref().map_or(false, |b| b == eq_val)
+        } else if let Some(ref ne_val) = ifne {
+            // IFNE: key doesn't exist (OK) or value differs
+            current_bytes.as_ref().map_or(true, |b| b != ne_val)
+        } else if let Some(ref digest) = ifdeq {
+            // IFDEQ: key must exist and digest of value must equal
+            if !crate::command::is_valid_digest(digest) {
+                return RespValue::error("ERR The digest must be exactly 16 hexadecimal characters");
+            }
+            current_bytes.as_ref().map_or(false, |b| {
+                let hash = crate::command::digest_hash(b);
+                hash.eq_ignore_ascii_case(digest)
+            })
+        } else if let Some(ref digest) = ifdne {
+            // IFDNE: key doesn't exist (OK) or digest of value differs
+            if !crate::command::is_valid_digest(digest) {
+                return RespValue::error("ERR The digest must be exactly 16 hexadecimal characters");
+            }
+            current_bytes.as_ref().map_or(true, |b| {
+                let hash = crate::command::digest_hash(b);
+                !hash.eq_ignore_ascii_case(digest)
+            })
+        } else {
+            true
+        };
+
+        if !condition_met {
+            return old_value.unwrap_or(RespValue::null_bulk_string());
+        }
+    }
 
     // NX/XX checks
     let key_exists = db.exists(&key);
@@ -621,16 +696,26 @@ pub async fn cmd_setrange(
     match db.get_mut(&key) {
         Some(entry) => match &mut entry.value {
             RedisValue::String(s) => {
-                let new_len = s.setrange(offset, &value);
-                RespValue::integer(new_len as i64)
+                match s.setrange(offset, &value) {
+                    Ok(new_len) => RespValue::integer(new_len as i64),
+                    Err(_) => RespValue::error("ERR string exceeds maximum allowed size (512MB)"),
+                }
             }
             _ => wrong_type_error(),
         },
         None => {
+            // If the key doesn't exist and value is empty, don't create it
+            if value.is_empty() {
+                return RespValue::integer(0);
+            }
             let mut s = RedisString::new(vec![]);
-            let new_len = s.setrange(offset, &value);
-            db.set(key, Entry::new(RedisValue::String(s)));
-            RespValue::integer(new_len as i64)
+            match s.setrange(offset, &value) {
+                Ok(new_len) => {
+                    db.set(key, Entry::new(RedisValue::String(s)));
+                    RespValue::integer(new_len as i64)
+                }
+                Err(_) => RespValue::error("ERR string exceeds maximum allowed size (512MB)"),
+            }
         }
     }
 }
@@ -742,7 +827,7 @@ pub async fn cmd_getex(
             "PERSIST" => {
                 db.persist(&key);
             }
-            _ => {}
+            _ => return RespValue::error("ERR syntax error"),
         }
     }
 
@@ -755,12 +840,18 @@ pub async fn cmd_msetex(args: &[RespValue], store: &SharedStore, client: &Client
         return wrong_arg_count("msetex");
     }
 
-    let numkeys = match arg_to_i64(&args[0]) {
-        Some(n) if n > 0 => n as usize,
+    let numkeys_raw = match arg_to_i64(&args[0]) {
+        Some(n) if n > 0 => n,
         _ => return RespValue::error("ERR invalid numkeys value"),
     };
+    // Overflow protection: reject numkeys > i32::MAX (overflow in 32-bit multiplication)
+    if numkeys_raw > i32::MAX as i64 {
+        return RespValue::error("ERR invalid numkeys value");
+    }
+    let numkeys = numkeys_raw as usize;
+    let required = 1 + numkeys * 2;
 
-    if args.len() < 1 + numkeys * 2 {
+    if args.len() < required {
         return RespValue::error("ERR wrong number of key-value pairs for 'msetex' command");
     }
 

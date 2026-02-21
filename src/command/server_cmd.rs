@@ -138,7 +138,7 @@ pub async fn cmd_info(
     config: &SharedConfig,
 ) -> RespValue {
     let cfg = config.read().await;
-    let store = store.read().await;
+    let mut store = store.write().await;
 
     let mut info = String::new();
 
@@ -163,6 +163,10 @@ pub async fn cmd_info(
     info.push_str("\r\n# Stats\r\n");
     info.push_str("total_connections_received:0\r\n");
     info.push_str("total_commands_processed:0\r\n");
+    // Drain lazy expired counts so expired_keys is accurate
+    store.drain_lazy_expired();
+    info.push_str(&format!("expired_keys:{}\r\n", store.expired_keys));
+    info.push_str(&format!("expired_keys_active:{}\r\n", store.expired_keys_active));
 
     // Persistence section
     info.push_str("\r\n# Persistence\r\n");
@@ -192,7 +196,7 @@ pub async fn cmd_info(
     RespValue::bulk_string(info.into_bytes())
 }
 
-pub async fn cmd_config(args: &[RespValue], config: &SharedConfig) -> RespValue {
+pub async fn cmd_config(args: &[RespValue], config: &SharedConfig, store: &SharedStore) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("config");
     }
@@ -271,7 +275,15 @@ pub async fn cmd_config(args: &[RespValue], config: &SharedConfig) -> RespValue 
                 Err(e) => RespValue::error(format!("ERR {e}")),
             }
         }
-        "RESETSTAT" => RespValue::ok(),
+        "RESETSTAT" => {
+            let mut store = store.write().await;
+            store.expired_keys = 0;
+            store.expired_keys_active = 0;
+            for db in &mut store.databases {
+                db.lazy_expired_count = 0;
+            }
+            RespValue::ok()
+        }
         _ => RespValue::error(format!(
             "ERR Unknown subcommand or wrong number of arguments for CONFIG {subcmd}"
         )),

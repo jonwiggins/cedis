@@ -29,8 +29,10 @@ pub async fn cmd_setbit(args: &[RespValue], store: &SharedStore, client: &Client
         Some(k) => k,
         None => return RespValue::error("ERR invalid key"),
     };
+    // Max bit offset: 512MB * 8 = 4294967296 (2^32)
+    const MAX_BIT_OFFSET: i64 = 512_i64 * 1024 * 1024 * 8;
     let offset = match arg_to_i64(&args[1]) {
-        Some(o) if o >= 0 => o as usize,
+        Some(o) if o >= 0 && o < MAX_BIT_OFFSET => o as usize,
         _ => return RespValue::error("ERR bit offset is not an integer or out of range"),
     };
     let value = match arg_to_i64(&args[2]) {

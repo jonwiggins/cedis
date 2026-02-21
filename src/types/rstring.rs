@@ -79,37 +79,41 @@ impl RedisString {
             return &[];
         }
 
-        let start = if start < 0 {
-            (len + start).max(0) as usize
-        } else {
-            (start as usize).min(self.data.len())
-        };
-
-        let end = if end < 0 {
-            let e = len + end;
-            if e < 0 {
-                return &[];
-            }
-            (e + 1) as usize
-        } else {
-            ((end + 1) as usize).min(self.data.len())
-        };
-
-        if start >= end || start >= self.data.len() {
+        // Quick return: both negative and start > end means the range is empty
+        if start < 0 && end < 0 && start > end {
             return &[];
         }
 
-        &self.data[start..end]
+        let mut s = if start < 0 { len + start } else { start };
+        let mut e = if end < 0 { len + end } else { end };
+
+        // Clamp to valid range (Redis behavior)
+        if s < 0 { s = 0; }
+        if e < 0 { e = 0; }
+        if e >= len { e = len - 1; }
+
+        if s > e {
+            return &[];
+        }
+
+        &self.data[s as usize..=e as usize]
     }
 
+    /// Maximum string size: 512 MB.
+    pub const MAX_SIZE: usize = 512 * 1024 * 1024;
+
     /// Set a range of bytes (SETRANGE). Pads with zeros if needed.
-    pub fn setrange(&mut self, offset: usize, data: &[u8]) -> usize {
+    /// Returns Ok(new_len) or Err if the result would exceed 512MB.
+    pub fn setrange(&mut self, offset: usize, data: &[u8]) -> Result<usize, &'static str> {
         let needed = offset + data.len();
+        if needed > Self::MAX_SIZE {
+            return Err("string exceeds maximum allowed size (512MB)");
+        }
         if needed > self.data.len() {
             self.data.resize(needed, 0);
         }
         self.data[offset..offset + data.len()].copy_from_slice(data);
-        self.data.len()
+        Ok(self.data.len())
     }
 
     /// Increment by i64, returning new value.

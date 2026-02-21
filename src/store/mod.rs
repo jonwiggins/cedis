@@ -14,6 +14,8 @@ pub struct Database {
     /// Monotonically increasing version counter for WATCH support.
     key_versions: HashMap<String, u64>,
     version_seq: u64,
+    /// Count of keys lazily expired since last drain.
+    pub lazy_expired_count: u64,
 }
 
 impl Database {
@@ -22,6 +24,7 @@ impl Database {
             data: HashMap::new(),
             key_versions: HashMap::new(),
             version_seq: 0,
+            lazy_expired_count: 0,
         }
     }
 
@@ -54,6 +57,7 @@ impl Database {
         // Lazy expiration
         if self.is_expired(key) {
             self.data.remove(key);
+            self.lazy_expired_count += 1;
             return None;
         }
         self.data.get(key)
@@ -63,6 +67,7 @@ impl Database {
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Entry> {
         if self.is_expired(key) {
             self.data.remove(key);
+            self.lazy_expired_count += 1;
             return None;
         }
         self.data.get_mut(key)
@@ -82,6 +87,7 @@ impl Database {
     pub fn exists(&mut self, key: &str) -> bool {
         if self.is_expired(key) {
             self.data.remove(key);
+            self.lazy_expired_count += 1;
             return false;
         }
         self.data.contains_key(key)
@@ -204,7 +210,7 @@ impl Database {
         false
     }
 
-    /// Number of keys (excluding expired).
+    /// Number of keys in the database (includes expired keys not yet removed).
     pub fn dbsize(&self) -> usize {
         self.data.len()
     }
@@ -245,6 +251,16 @@ impl Database {
             })
             .map(|(key, _)| key.clone())
             .choose(&mut rng)
+    }
+
+    /// Get an entry without lazy expiration (for read-only inspection like MEMORY USAGE).
+    pub fn get_entry(&self, key: &str) -> Option<&Entry> {
+        let entry = self.data.get(key)?;
+        if entry.is_expired() {
+            None
+        } else {
+            Some(entry)
+        }
     }
 
     fn is_expired(&self, key: &str) -> bool {
@@ -362,6 +378,10 @@ pub struct DataStore {
     pub databases: Vec<Database>,
     /// Tracks changes since last RDB save for INFO rdb_changes_since_last_save.
     pub dirty: u64,
+    /// Total number of keys expired (lazy + active).
+    pub expired_keys: u64,
+    /// Number of keys expired by the active expiration background task.
+    pub expired_keys_active: u64,
 }
 
 impl DataStore {
@@ -370,7 +390,7 @@ impl DataStore {
         for _ in 0..num_databases {
             databases.push(Database::new());
         }
-        DataStore { databases, dirty: 0 }
+        DataStore { databases, dirty: 0, expired_keys: 0, expired_keys_active: 0 }
     }
 
     pub fn db(&mut self, index: usize) -> &mut Database {
@@ -395,9 +415,27 @@ impl DataStore {
     pub fn active_expire_cycle(&mut self) -> usize {
         let mut total = 0;
         for db in &mut self.databases {
-            total += db.active_expire(20);
+            let n = db.active_expire(20);
+            total += n;
+        }
+        self.expired_keys += total as u64;
+        self.expired_keys_active += total as u64;
+        // Also drain any lazy-expired counts from databases
+        for db in &mut self.databases {
+            let lazy = db.lazy_expired_count;
+            self.expired_keys += lazy;
+            db.lazy_expired_count = 0;
         }
         total
+    }
+
+    /// Drain lazy expired counts from all databases into the store-level counter.
+    pub fn drain_lazy_expired(&mut self) {
+        for db in &mut self.databases {
+            let lazy = db.lazy_expired_count;
+            self.expired_keys += lazy;
+            db.lazy_expired_count = 0;
+        }
     }
 
     /// Estimate total memory usage across all databases.
