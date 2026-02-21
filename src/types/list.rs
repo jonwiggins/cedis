@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 /// Redis list type — implemented using VecDeque for efficient push/pop from both ends.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RedisList {
     data: VecDeque<Vec<u8>>,
 }
@@ -43,18 +43,22 @@ impl RedisList {
     }
 
     pub fn lset(&mut self, index: i64, value: Vec<u8>) -> bool {
-        if let Some(idx) = self.resolve_index(index) {
-            if idx < self.data.len() {
-                self.data[idx] = value;
-                return true;
-            }
+        if let Some(idx) = self.resolve_index(index)
+            && idx < self.data.len()
+        {
+            self.data[idx] = value;
+            return true;
         }
         false
     }
 
     pub fn lrange(&self, start: i64, stop: i64) -> Vec<&Vec<u8>> {
         let len = self.data.len() as i64;
-        let start = if start < 0 { (len + start).max(0) } else { start } as usize;
+        let start = if start < 0 {
+            (len + start).max(0)
+        } else {
+            start
+        } as usize;
         let stop = if stop < 0 { (len + stop).max(0) } else { stop } as usize;
 
         if start > stop || start >= self.data.len() {
@@ -78,7 +82,7 @@ impl RedisList {
                 }
             }
         } else if count < 0 {
-            let target = (-count) as i64;
+            let target = -count;
             let mut i = self.data.len();
             while i > 0 && removed < target {
                 i -= 1;
@@ -102,7 +106,11 @@ impl RedisList {
 
     pub fn ltrim(&mut self, start: i64, stop: i64) {
         let len = self.data.len() as i64;
-        let start = if start < 0 { (len + start).max(0) } else { start } as usize;
+        let start = if start < 0 {
+            (len + start).max(0)
+        } else {
+            start
+        } as usize;
         let stop = if stop < 0 { (len + stop).max(0) } else { stop } as usize;
 
         if start > stop || start >= self.data.len() {
@@ -146,12 +154,10 @@ impl RedisList {
             // Forward scan, skip (rank-1) matches
             let skip = if rank == 0 { 0 } else { (rank - 1) as usize };
             let mut skipped = 0;
-            let mut scanned = 0;
-            for (i, v) in self.data.iter().enumerate() {
+            for (scanned, (i, v)) in self.data.iter().enumerate().enumerate() {
                 if scanned >= limit {
                     break;
                 }
-                scanned += 1;
                 if v.as_slice() == value {
                     if skipped < skip {
                         skipped += 1;
@@ -167,12 +173,10 @@ impl RedisList {
             // Reverse scan
             let skip = ((-rank) - 1) as usize;
             let mut skipped = 0;
-            let mut scanned = 0;
-            for i in (0..len).rev() {
+            for (scanned, i) in (0..len).rev().enumerate() {
                 if scanned >= limit {
                     break;
                 }
-                scanned += 1;
                 if self.data[i].as_slice() == value {
                     if skipped < skip {
                         skipped += 1;

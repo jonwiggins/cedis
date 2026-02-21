@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A stream entry ID: milliseconds-sequence
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct StreamEntryId {
     pub ms: u64,
     pub seq: u64,
@@ -39,7 +39,7 @@ impl StreamEntryId {
 pub type StreamEntry = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// Redis stream type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RedisStream {
     entries: BTreeMap<StreamEntryId, StreamEntry>,
     last_id: StreamEntryId,
@@ -100,9 +100,7 @@ impl RedisStream {
         start: &StreamEntryId,
         end: &StreamEntryId,
     ) -> Vec<(&StreamEntryId, &StreamEntry)> {
-        self.entries
-            .range(start.clone()..=end.clone())
-            .collect()
+        self.entries.range(start.clone()..=end.clone()).collect()
     }
 
     /// Return entries in the range [start, end] inclusive, in reverse order.
@@ -126,12 +124,8 @@ impl RedisStream {
             return 0;
         }
         let to_remove = self.entries.len() - maxlen;
-        let keys_to_remove: Vec<StreamEntryId> = self
-            .entries
-            .keys()
-            .take(to_remove)
-            .cloned()
-            .collect();
+        let keys_to_remove: Vec<StreamEntryId> =
+            self.entries.keys().take(to_remove).cloned().collect();
         for key in &keys_to_remove {
             self.entries.remove(key);
         }

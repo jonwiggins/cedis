@@ -5,11 +5,7 @@ use crate::resp::RespValue;
 use crate::store::SharedStore;
 use crate::store::entry::{Entry, now_millis};
 
-pub async fn cmd_del(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_del(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("del");
     }
@@ -19,10 +15,10 @@ pub async fn cmd_del(
     let mut count = 0i64;
 
     for arg in args {
-        if let Some(key) = arg_to_string(arg) {
-            if db.del(&key) {
-                count += 1;
-            }
+        if let Some(key) = arg_to_string(arg)
+            && db.del(&key)
+        {
+            count += 1;
         }
     }
 
@@ -43,21 +39,17 @@ pub async fn cmd_exists(
     let mut count = 0i64;
 
     for arg in args {
-        if let Some(key) = arg_to_string(arg) {
-            if db.exists(&key) {
-                count += 1;
-            }
+        if let Some(key) = arg_to_string(arg)
+            && db.exists(&key)
+        {
+            count += 1;
         }
     }
 
     RespValue::integer(count)
 }
 
-pub async fn cmd_touch(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_touch(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("touch");
     }
@@ -67,10 +59,10 @@ pub async fn cmd_touch(
     let mut count = 0i64;
 
     for arg in args {
-        if let Some(key) = arg_to_string(arg) {
-            if db.exists(&key) {
-                count += 1;
-            }
+        if let Some(key) = arg_to_string(arg)
+            && db.exists(&key)
+        {
+            count += 1;
         }
     }
 
@@ -78,7 +70,10 @@ pub async fn cmd_touch(
 }
 
 /// Parse NX/XX/GT/LT option flags from expire command args starting at `start_idx`.
-fn parse_expire_flags(args: &[RespValue], start_idx: usize) -> Result<(bool, bool, bool, bool), RespValue> {
+fn parse_expire_flags(
+    args: &[RespValue],
+    start_idx: usize,
+) -> Result<(bool, bool, bool, bool), RespValue> {
     let (mut nx, mut xx, mut gt, mut lt) = (false, false, false, false);
     for i in start_idx..args.len() {
         match arg_to_string(&args[i]).map(|s| s.to_uppercase()) {
@@ -88,21 +83,35 @@ fn parse_expire_flags(args: &[RespValue], start_idx: usize) -> Result<(bool, boo
             Some(ref s) if s == "LT" => lt = true,
             _ => {
                 let opt_name = arg_to_string(&args[i]).unwrap_or_default();
-                return Err(RespValue::error(format!("ERR Unsupported option {}", opt_name)));
+                return Err(RespValue::error(format!(
+                    "ERR Unsupported option {}",
+                    opt_name
+                )));
             }
         }
     }
     if nx && (xx || gt || lt) {
-        return Err(RespValue::error("ERR NX and XX, GT or LT options at the same time are not compatible"));
+        return Err(RespValue::error(
+            "ERR NX and XX, GT or LT options at the same time are not compatible",
+        ));
     }
     if gt && lt {
-        return Err(RespValue::error("ERR GT and LT options at the same time are not compatible"));
+        return Err(RespValue::error(
+            "ERR GT and LT options at the same time are not compatible",
+        ));
     }
     Ok((nx, xx, gt, lt))
 }
 
 /// Check if the new expiry should be applied given the flags and current expiry.
-fn should_set_expiry(current_expiry: Option<u64>, new_expiry: u64, nx: bool, xx: bool, gt: bool, lt: bool) -> bool {
+fn should_set_expiry(
+    current_expiry: Option<u64>,
+    new_expiry: u64,
+    nx: bool,
+    xx: bool,
+    gt: bool,
+    lt: bool,
+) -> bool {
     if nx && current_expiry.is_some() {
         return false;
     }
@@ -157,16 +166,16 @@ pub async fn cmd_expire(
     if millis_i128 > i64::MAX as i128 || millis_i128 < i64::MIN as i128 {
         return RespValue::error("ERR invalid expire time in 'expire' command");
     }
-    if seconds > 0 {
-        if millis_i128 + (now_millis() as i128) > i64::MAX as i128 {
-            return RespValue::error("ERR invalid expire time in 'expire' command");
-        }
+    if seconds > 0 && millis_i128 + (now_millis() as i128) > i64::MAX as i128 {
+        return RespValue::error("ERR invalid expire time in 'expire' command");
     }
 
     if seconds <= 0 && !gt {
         let mut store = store.write().await;
         let db = store.db(client.db_index);
-        if !db.exists(&key) { return RespValue::integer(0); }
+        if !db.exists(&key) {
+            return RespValue::integer(0);
+        }
         let current_expiry = db.get_expiry(&key);
         if !should_set_expiry(current_expiry, 0, nx, xx, gt, lt) {
             return RespValue::integer(0);
@@ -177,12 +186,18 @@ pub async fn cmd_expire(
     let expires_at = now_millis() + (seconds as u64) * 1000;
     let mut store = store.write().await;
     let db = store.db(client.db_index);
-    if !db.exists(&key) { return RespValue::integer(0); }
+    if !db.exists(&key) {
+        return RespValue::integer(0);
+    }
     let current_expiry = db.get_expiry(&key);
     if !should_set_expiry(current_expiry, expires_at, nx, xx, gt, lt) {
         return RespValue::integer(0);
     }
-    RespValue::integer(if db.set_expiry(&key, expires_at) { 1 } else { 0 })
+    RespValue::integer(if db.set_expiry(&key, expires_at) {
+        1
+    } else {
+        0
+    })
 }
 
 pub async fn cmd_pexpire(
@@ -221,7 +236,9 @@ pub async fn cmd_pexpire(
     if millis <= 0 && !gt {
         let mut store = store.write().await;
         let db = store.db(client.db_index);
-        if !db.exists(&key) { return RespValue::integer(0); }
+        if !db.exists(&key) {
+            return RespValue::integer(0);
+        }
         let current_expiry = db.get_expiry(&key);
         if !should_set_expiry(current_expiry, 0, nx, xx, gt, lt) {
             return RespValue::integer(0);
@@ -232,12 +249,18 @@ pub async fn cmd_pexpire(
     let expires_at = now_millis() + millis as u64;
     let mut store = store.write().await;
     let db = store.db(client.db_index);
-    if !db.exists(&key) { return RespValue::integer(0); }
+    if !db.exists(&key) {
+        return RespValue::integer(0);
+    }
     let current_expiry = db.get_expiry(&key);
     if !should_set_expiry(current_expiry, expires_at, nx, xx, gt, lt) {
         return RespValue::integer(0);
     }
-    RespValue::integer(if db.set_expiry(&key, expires_at) { 1 } else { 0 })
+    RespValue::integer(if db.set_expiry(&key, expires_at) {
+        1
+    } else {
+        0
+    })
 }
 
 pub async fn cmd_expireat(
@@ -283,12 +306,18 @@ pub async fn cmd_expireat(
 
     let mut store = store.write().await;
     let db = store.db(client.db_index);
-    if !db.exists(&key) { return RespValue::integer(0); }
+    if !db.exists(&key) {
+        return RespValue::integer(0);
+    }
     let current_expiry = db.get_expiry(&key);
     if !should_set_expiry(current_expiry, expires_at, nx, xx, gt, lt) {
         return RespValue::integer(0);
     }
-    RespValue::integer(if db.set_expiry(&key, expires_at) { 1 } else { 0 })
+    RespValue::integer(if db.set_expiry(&key, expires_at) {
+        1
+    } else {
+        0
+    })
 }
 
 pub async fn cmd_pexpireat(
@@ -322,7 +351,9 @@ pub async fn cmd_pexpireat(
     let ts = timestamp as u64;
     let mut store = store.write().await;
     let db = store.db(client.db_index);
-    if !db.exists(&key) { return RespValue::integer(0); }
+    if !db.exists(&key) {
+        return RespValue::integer(0);
+    }
     let current_expiry = db.get_expiry(&key);
     if !should_set_expiry(current_expiry, ts, nx, xx, gt, lt) {
         return RespValue::integer(0);
@@ -330,11 +361,7 @@ pub async fn cmd_pexpireat(
     RespValue::integer(if db.set_expiry(&key, ts) { 1 } else { 0 })
 }
 
-pub async fn cmd_ttl(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_ttl(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("ttl");
     }
@@ -352,11 +379,7 @@ pub async fn cmd_ttl(
     }
 }
 
-pub async fn cmd_pttl(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_pttl(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("pttl");
     }
@@ -442,11 +465,7 @@ pub async fn cmd_persist(
     RespValue::integer(if db.persist(&key) { 1 } else { 0 })
 }
 
-pub async fn cmd_type(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_type(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("type");
     }
@@ -522,11 +541,7 @@ pub async fn cmd_renamenx(
     RespValue::integer(1)
 }
 
-pub async fn cmd_keys(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_keys(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("keys");
     }
@@ -546,11 +561,7 @@ pub async fn cmd_keys(
     RespValue::array(items)
 }
 
-pub async fn cmd_scan(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_scan(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("scan");
     }
@@ -594,7 +605,8 @@ pub async fn cmd_scan(
     let mut store = store.write().await;
     let db = store.db(client.db_index);
 
-    let (next_cursor, keys) = db.scan_with_type(cursor, pattern.as_deref(), count, type_filter.as_deref());
+    let (next_cursor, keys) =
+        db.scan_with_type(cursor, pattern.as_deref(), count, type_filter.as_deref());
 
     let key_values: Vec<RespValue> = keys
         .into_iter()
@@ -678,9 +690,7 @@ pub async fn cmd_object(
                                     _ => 8192, // default to 8KB
                                 };
                                 // Estimate serialized size: ~(11 + avg_entry_size) per entry
-                                let est_size: usize = l.iter()
-                                    .map(|e| e.len() + 11)
-                                    .sum();
+                                let est_size: usize = l.iter().map(|e| e.len() + 11).sum();
                                 if est_size <= max_bytes {
                                     "listpack"
                                 } else {
@@ -703,7 +713,9 @@ pub async fn cmd_object(
                             let max_listpack_value = cfg.set_max_listpack_value as usize;
                             if s.is_all_integers() && s.len() <= max_intset {
                                 "intset"
-                            } else if s.len() <= max_listpack && !s.has_long_entry(max_listpack_value) {
+                            } else if s.len() <= max_listpack
+                                && !s.has_long_entry(max_listpack_value)
+                            {
                                 "listpack"
                             } else {
                                 "hashtable"
@@ -798,25 +810,25 @@ fn dump_encode_bytes(data: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 fn dump_decode_len(data: &[u8], offset: &mut usize) -> Option<usize> {
-    if *offset + 4 > data.len() { return None; }
-    let len = u32::from_le_bytes(data[*offset..*offset+4].try_into().ok()?) as usize;
+    if *offset + 4 > data.len() {
+        return None;
+    }
+    let len = u32::from_le_bytes(data[*offset..*offset + 4].try_into().ok()?) as usize;
     *offset += 4;
     Some(len)
 }
 
 fn dump_decode_bytes(data: &[u8], offset: &mut usize) -> Option<Vec<u8>> {
     let len = dump_decode_len(data, offset)?;
-    if *offset + len > data.len() { return None; }
-    let bytes = data[*offset..*offset+len].to_vec();
+    if *offset + len > data.len() {
+        return None;
+    }
+    let bytes = data[*offset..*offset + len].to_vec();
     *offset += len;
     Some(bytes)
 }
 
-pub async fn cmd_dump(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_dump(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("dump");
     }
@@ -912,7 +924,9 @@ pub async fn cmd_restore(
         match arg_to_string(&args[i]).map(|s| s.to_uppercase()) {
             Some(ref s) if s == "REPLACE" => replace = true,
             Some(ref s) if s == "ABSTTL" => absttl = true,
-            Some(ref s) if s == "IDLETIME" || s == "FREQ" => { i += 1; }
+            Some(ref s) if s == "IDLETIME" || s == "FREQ" => {
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
@@ -939,12 +953,12 @@ pub async fn cmd_restore(
         0 => {
             // String
             match dump_decode_bytes(payload, &mut offset) {
-                Some(bytes) => crate::types::RedisValue::String(
-                    crate::types::rstring::RedisString::new(bytes),
-                ),
-                None => crate::types::RedisValue::String(
-                    crate::types::rstring::RedisString::new(vec![]),
-                ),
+                Some(bytes) => {
+                    crate::types::RedisValue::String(crate::types::rstring::RedisString::new(bytes))
+                }
+                None => crate::types::RedisValue::String(crate::types::rstring::RedisString::new(
+                    vec![],
+                )),
             }
         }
         1 => {
@@ -976,14 +990,13 @@ pub async fn cmd_restore(
             let mut zset = crate::types::sorted_set::RedisSortedSet::new();
             if let Some(count) = dump_decode_len(payload, &mut offset) {
                 for _ in 0..count {
-                    if let Some(member_bytes) = dump_decode_bytes(payload, &mut offset) {
-                        if offset + 8 <= payload.len() {
-                            let score = f64::from_le_bytes(
-                                payload[offset..offset + 8].try_into().unwrap(),
-                            );
-                            offset += 8;
-                            zset.add(member_bytes, score);
-                        }
+                    if let Some(member_bytes) = dump_decode_bytes(payload, &mut offset)
+                        && offset + 8 <= payload.len()
+                    {
+                        let score =
+                            f64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+                        offset += 8;
+                        zset.add(member_bytes, score);
                     }
                 }
             }
@@ -994,11 +1007,11 @@ pub async fn cmd_restore(
             let mut hash = crate::types::hash::RedisHash::new();
             if let Some(count) = dump_decode_len(payload, &mut offset) {
                 for _ in 0..count {
-                    if let Some(field_bytes) = dump_decode_bytes(payload, &mut offset) {
-                        if let Some(value_bytes) = dump_decode_bytes(payload, &mut offset) {
-                            let field = String::from_utf8_lossy(&field_bytes).into_owned();
-                            hash.set(field, value_bytes);
-                        }
+                    if let Some(field_bytes) = dump_decode_bytes(payload, &mut offset)
+                        && let Some(value_bytes) = dump_decode_bytes(payload, &mut offset)
+                    {
+                        let field = String::from_utf8_lossy(&field_bytes).into_owned();
+                        hash.set(field, value_bytes);
                     }
                 }
             }
@@ -1024,11 +1037,7 @@ pub async fn cmd_restore(
     RespValue::ok()
 }
 
-pub async fn cmd_sort(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_sort(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("sort");
     }
@@ -1111,37 +1120,36 @@ pub async fn cmd_sort(
     };
 
     // Helper: resolve a pattern like "weight_*" by replacing * with the element value
-    let resolve_pattern = |db: &mut crate::store::Database, pattern: &str, element: &[u8]| -> Option<Vec<u8>> {
-        if pattern == "#" {
-            return Some(element.to_vec());
-        }
-        let elem_str = String::from_utf8_lossy(element);
-        // Check for hash field pattern: key->field
-        if let Some(arrow_pos) = pattern.find("->") {
-            let key_pattern = &pattern[..arrow_pos];
-            let field = &pattern[arrow_pos + 2..];
-            let lookup_key = key_pattern.replace('*', &elem_str);
-            let field_name = field.replace('*', &elem_str);
-            match db.get(&lookup_key) {
-                Some(entry) => match &entry.value {
-                    crate::types::RedisValue::Hash(h) => {
-                        h.get(&field_name).map(|v| v.to_vec())
-                    }
-                    _ => None,
-                },
-                None => None,
+    let resolve_pattern =
+        |db: &mut crate::store::Database, pattern: &str, element: &[u8]| -> Option<Vec<u8>> {
+            if pattern == "#" {
+                return Some(element.to_vec());
             }
-        } else {
-            let lookup_key = pattern.replace('*', &elem_str);
-            match db.get(&lookup_key) {
-                Some(entry) => match &entry.value {
-                    crate::types::RedisValue::String(s) => Some(s.as_bytes().to_vec()),
-                    _ => None,
-                },
-                None => None,
+            let elem_str = String::from_utf8_lossy(element);
+            // Check for hash field pattern: key->field
+            if let Some(arrow_pos) = pattern.find("->") {
+                let key_pattern = &pattern[..arrow_pos];
+                let field = &pattern[arrow_pos + 2..];
+                let lookup_key = key_pattern.replace('*', &elem_str);
+                let field_name = field.replace('*', &elem_str);
+                match db.get(&lookup_key) {
+                    Some(entry) => match &entry.value {
+                        crate::types::RedisValue::Hash(h) => h.get(&field_name).map(|v| v.to_vec()),
+                        _ => None,
+                    },
+                    None => None,
+                }
+            } else {
+                let lookup_key = pattern.replace('*', &elem_str);
+                match db.get(&lookup_key) {
+                    Some(entry) => match &entry.value {
+                        crate::types::RedisValue::String(s) => Some(s.as_bytes().to_vec()),
+                        _ => None,
+                    },
+                    None => None,
+                }
             }
-        }
-    };
+        };
 
     // Sort using BY pattern if provided, or by element value
     let nosort = by_pattern.as_deref() == Some("nosort");
@@ -1160,7 +1168,9 @@ pub async fn cmd_sort(
                     let b_val = resolve_pattern(db, by_pat, b).unwrap_or_default();
                     let a_num: f64 = String::from_utf8_lossy(&a_val).parse().unwrap_or(0.0);
                     let b_num: f64 = String::from_utf8_lossy(&b_val).parse().unwrap_or(0.0);
-                    a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal)
+                    a_num
+                        .partial_cmp(&b_num)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
         } else if alpha {
@@ -1169,7 +1179,9 @@ pub async fn cmd_sort(
             elements.sort_by(|a, b| {
                 let a_num: f64 = String::from_utf8_lossy(a).parse().unwrap_or(0.0);
                 let b_num: f64 = String::from_utf8_lossy(b).parse().unwrap_or(0.0);
-                a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal)
+                a_num
+                    .partial_cmp(&b_num)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
         if desc {
@@ -1206,10 +1218,7 @@ pub async fn cmd_sort(
         for elem in store_items {
             list.rpush(elem);
         }
-        db.set(
-            dest,
-            Entry::new(crate::types::RedisValue::List(list)),
-        );
+        db.set(dest, Entry::new(crate::types::RedisValue::List(list)));
         RespValue::integer(len)
     } else if !get_patterns.is_empty() {
         // With GET patterns, missing values are null bulk strings
@@ -1224,19 +1233,12 @@ pub async fn cmd_sort(
         }
         RespValue::array(resp_items)
     } else {
-        let items: Vec<RespValue> = elements
-            .into_iter()
-            .map(RespValue::bulk_string)
-            .collect();
+        let items: Vec<RespValue> = elements.into_iter().map(RespValue::bulk_string).collect();
         RespValue::array(items)
     }
 }
 
-pub async fn cmd_copy(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_copy(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     // COPY source destination [DB destination-db] [REPLACE]
     if args.len() < 2 {
         return wrong_arg_count("copy");
@@ -1268,7 +1270,9 @@ pub async fn cmd_copy(
                 if i < args.len() {
                     match arg_to_i64(&args[i]) {
                         Some(n) if n >= 0 => dest_db = Some(n as usize),
-                        _ => return RespValue::error("ERR value is not an integer or out of range"),
+                        _ => {
+                            return RespValue::error("ERR value is not an integer or out of range");
+                        }
                     }
                 } else {
                     return RespValue::error("ERR syntax error");
@@ -1313,11 +1317,7 @@ pub async fn cmd_copy(
     RespValue::integer(1)
 }
 
-pub async fn cmd_move(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_move(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     // MOVE key db
     if args.len() != 2 {
         return wrong_arg_count("move");

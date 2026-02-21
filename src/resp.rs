@@ -327,12 +327,7 @@ fn find_crlf_from(buf: &[u8], start: usize) -> Option<usize> {
     if buf.len() < start + 2 {
         return None;
     }
-    for i in start..buf.len() - 1 {
-        if buf[i] == b'\r' && buf[i + 1] == b'\n' {
-            return Some(i);
-        }
-    }
-    None
+    (start..buf.len() - 1).find(|&i| buf[i] == b'\r' && buf[i + 1] == b'\n')
 }
 
 /// Split an inline command into tokens, respecting double-quoted strings.
@@ -375,7 +370,7 @@ fn split_inline_command(line: &str) -> Result<Vec<String>, RespError> {
             in_quotes = true;
         } else if ch == '\'' {
             // Single-quoted string — no escape processing
-            while let Some(ch) = chars.next() {
+            for ch in chars.by_ref() {
                 if ch == '\'' {
                     break;
                 }
@@ -391,7 +386,9 @@ fn split_inline_command(line: &str) -> Result<Vec<String>, RespError> {
     }
 
     if in_quotes {
-        return Err(RespError::InvalidData("unbalanced quotes in request".into()));
+        return Err(RespError::InvalidData(
+            "unbalanced quotes in request".into(),
+        ));
     }
 
     if !current.is_empty() {
@@ -429,10 +426,7 @@ mod tests {
     fn test_parse_error() {
         let mut buf = BytesMut::from("-ERR unknown command\r\n");
         let result = RespParser::parse(&mut buf).unwrap().unwrap();
-        assert_eq!(
-            result,
-            RespValue::Error("ERR unknown command".to_string())
-        );
+        assert_eq!(result, RespValue::Error("ERR unknown command".to_string()));
     }
 
     #[test]
@@ -522,9 +516,7 @@ mod tests {
         let result = RespParser::parse(&mut buf).unwrap().unwrap();
         assert_eq!(
             result,
-            RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                b"PING".to_vec()
-            ))]))
+            RespValue::Array(Some(vec![RespValue::BulkString(Some(b"PING".to_vec()))]))
         );
     }
 

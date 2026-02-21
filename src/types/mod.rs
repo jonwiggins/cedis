@@ -1,12 +1,12 @@
-pub mod rstring;
-pub mod list;
+pub mod bitmap;
+pub mod geo;
 pub mod hash;
+pub mod hyperloglog;
+pub mod list;
+pub mod rstring;
 pub mod set;
 pub mod sorted_set;
 pub mod stream;
-pub mod bitmap;
-pub mod hyperloglog;
-pub mod geo;
 
 /// The core value type stored in the data store.
 #[derive(Debug, Clone)]

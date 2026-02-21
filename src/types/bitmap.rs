@@ -1,11 +1,12 @@
 /// A bitmap type backed by a Vec<u8>.
 /// Each byte stores 8 bits, with the most significant bit first (bit 0 of byte 0
 /// is the highest-order bit), matching Redis bit ordering.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Bitmap {
     data: Vec<u8>,
 }
 
+#[allow(clippy::needless_range_loop)]
 impl Bitmap {
     pub fn new() -> Self {
         Bitmap { data: Vec::new() }
@@ -47,10 +48,7 @@ impl Bitmap {
 
     /// Count all set bits in the entire bitmap.
     pub fn bitcount(&self) -> usize {
-        self.data
-            .iter()
-            .map(|b| b.count_ones() as usize)
-            .sum()
+        self.data.iter().map(|b| b.count_ones() as usize).sum()
     }
 
     /// Count set bits in a byte range [start, end] (inclusive).
@@ -123,9 +121,11 @@ impl Bitmap {
     pub fn bitop_and(&self, other: &Self) -> Self {
         let len = self.data.len().max(other.data.len());
         let mut result = vec![0u8; len];
-        let min_len = self.data.len().min(other.data.len());
-        for i in 0..min_len {
-            result[i] = self.data[i] & other.data[i];
+        for (r, (a, b)) in result
+            .iter_mut()
+            .zip(self.data.iter().zip(other.data.iter()))
+        {
+            *r = a & b;
         }
         // Bytes beyond the shorter bitmap AND with 0 = 0, already zero-initialized.
         Bitmap { data: result }
@@ -137,7 +137,11 @@ impl Bitmap {
         let mut result = vec![0u8; len];
         for i in 0..len {
             let a = if i < self.data.len() { self.data[i] } else { 0 };
-            let b = if i < other.data.len() { other.data[i] } else { 0 };
+            let b = if i < other.data.len() {
+                other.data[i]
+            } else {
+                0
+            };
             result[i] = a | b;
         }
         Bitmap { data: result }
@@ -149,7 +153,11 @@ impl Bitmap {
         let mut result = vec![0u8; len];
         for i in 0..len {
             let a = if i < self.data.len() { self.data[i] } else { 0 };
-            let b = if i < other.data.len() { other.data[i] } else { 0 };
+            let b = if i < other.data.len() {
+                other.data[i]
+            } else {
+                0
+            };
             result[i] = a ^ b;
         }
         Bitmap { data: result }
@@ -180,8 +188,16 @@ impl Bitmap {
         let len = first.data.len().max(union.data.len());
         let mut result = vec![0u8; len];
         for i in 0..len {
-            let a = if i < first.data.len() { first.data[i] } else { 0 };
-            let b = if i < union.data.len() { union.data[i] } else { 0 };
+            let a = if i < first.data.len() {
+                first.data[i]
+            } else {
+                0
+            };
+            let b = if i < union.data.len() {
+                union.data[i]
+            } else {
+                0
+            };
             result[i] = a & !b;
         }
         Bitmap { data: result }
@@ -204,8 +220,16 @@ impl Bitmap {
         let len = first.data.len().max(union.data.len());
         let mut result = vec![0u8; len];
         for i in 0..len {
-            let a = if i < first.data.len() { first.data[i] } else { 0 };
-            let b = if i < union.data.len() { union.data[i] } else { 0 };
+            let a = if i < first.data.len() {
+                first.data[i]
+            } else {
+                0
+            };
+            let b = if i < union.data.len() {
+                union.data[i]
+            } else {
+                0
+            };
             result[i] = !a & b;
         }
         Bitmap { data: result }
@@ -228,8 +252,16 @@ impl Bitmap {
         let len = first.data.len().max(union.data.len());
         let mut result = vec![0u8; len];
         for i in 0..len {
-            let a = if i < first.data.len() { first.data[i] } else { 0 };
-            let b = if i < union.data.len() { union.data[i] } else { 0 };
+            let a = if i < first.data.len() {
+                first.data[i]
+            } else {
+                0
+            };
+            let b = if i < union.data.len() {
+                union.data[i]
+            } else {
+                0
+            };
             result[i] = a & b;
         }
         Bitmap { data: result }
@@ -365,7 +397,11 @@ impl Bitmap {
 fn normalize_index(idx: i64, len: i64) -> usize {
     if idx < 0 {
         let normalized = len + idx;
-        if normalized < 0 { 0 } else { normalized as usize }
+        if normalized < 0 {
+            0
+        } else {
+            normalized as usize
+        }
     } else {
         idx as usize
     }

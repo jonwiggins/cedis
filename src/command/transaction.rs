@@ -50,7 +50,11 @@ pub fn cmd_exec<'a>(
                 let current_version = db.key_version(key);
                 let current_global = db.global_version();
                 // Key was modified if its version changed, or if touch_all was called
-                if current_version != *saved_version || (*saved_global > 0 && current_global != *saved_global && current_version == 0) {
+                if current_version != *saved_version
+                    || (*saved_global > 0
+                        && current_global != *saved_global
+                        && current_version == 0)
+                {
                     drop(store_guard);
                     client.multi_queue.clear();
                     client.watched_keys.clear();
@@ -79,8 +83,18 @@ pub fn cmd_exec<'a>(
 
         let mut results = Vec::with_capacity(queue.len());
         for (cmd_name, args) in queue {
-            let result =
-                crate::command::dispatch(&cmd_name, &args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await;
+            let result = crate::command::dispatch(
+                &cmd_name,
+                &args,
+                store,
+                config,
+                client,
+                pubsub,
+                pubsub_tx,
+                key_watcher,
+                script_cache,
+            )
+            .await;
             results.push(result);
         }
 
@@ -119,7 +133,9 @@ pub async fn cmd_watch(
     for arg in args {
         if let Some(key) = crate::command::arg_to_string(arg) {
             let ver = db.key_version(&key);
-            client.watched_keys.push((client.db_index, key, ver, global_ver));
+            client
+                .watched_keys
+                .push((client.db_index, key, ver, global_ver));
         }
     }
 

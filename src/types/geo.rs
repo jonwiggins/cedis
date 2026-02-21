@@ -12,7 +12,7 @@ const GEO_STEP: u32 = 26;
 
 /// A geographic data set storing members with longitude/latitude coordinates.
 /// Under the hood, Redis stores geo data in a sorted set using geohash scores.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GeoSet {
     /// member -> (longitude, latitude)
     members: HashMap<Vec<u8>, (f64, f64)>,
@@ -99,9 +99,17 @@ impl GeoSet {
             .collect();
 
         if ascending {
-            results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
+            results.sort_by(|a, b| {
+                a.distance
+                    .partial_cmp(&b.distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         } else {
-            results.sort_by(|a, b| b.distance.partial_cmp(&a.distance).unwrap_or(std::cmp::Ordering::Equal));
+            results.sort_by(|a, b| {
+                b.distance
+                    .partial_cmp(&a.distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
 
         if let Some(c) = count {
@@ -147,9 +155,17 @@ impl GeoSet {
             .collect();
 
         if ascending {
-            results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
+            results.sort_by(|a, b| {
+                a.distance
+                    .partial_cmp(&b.distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         } else {
-            results.sort_by(|a, b| b.distance.partial_cmp(&a.distance).unwrap_or(std::cmp::Ordering::Equal));
+            results.sort_by(|a, b| {
+                b.distance
+                    .partial_cmp(&a.distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
 
         if let Some(c) = count {
@@ -161,7 +177,7 @@ impl GeoSet {
 
     /// Estimate memory usage.
     pub fn estimated_memory(&self) -> usize {
-        let member_bytes: usize = self.members.iter().map(|(k, _)| k.len() + 16).sum();
+        let member_bytes: usize = self.members.keys().map(|k| k.len() + 16).sum();
         64 * self.members.len() + member_bytes
     }
 }
@@ -173,7 +189,8 @@ fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let dlat = (lat2 - lat1).to_radians();
     let dlon = (lon2 - lon1).to_radians();
 
-    let a = (dlat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
+    let a =
+        (dlat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().asin();
     EARTH_RADIUS_M * c
 }

@@ -11,6 +11,7 @@ use crate::store::SharedStore;
 use tokio::sync::mpsc;
 
 /// EVAL script numkeys key [key ...] arg [arg ...]
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_eval(
     args: &[RespValue],
     store: &SharedStore,
@@ -59,6 +60,7 @@ pub async fn cmd_eval(
 }
 
 /// EVALSHA sha1 numkeys key [key ...] arg [arg ...]
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_evalsha(
     args: &[RespValue],
     store: &SharedStore,

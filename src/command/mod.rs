@@ -1,17 +1,17 @@
-pub mod string;
-pub mod list;
+pub mod bitmap;
+pub mod geo;
 pub mod hash;
+pub mod hyperloglog;
+pub mod key;
+pub mod list;
+pub mod pubsub;
+pub mod scripting;
+pub mod server_cmd;
 pub mod set;
 pub mod sorted_set;
 pub mod stream;
-pub mod bitmap;
-pub mod hyperloglog;
-pub mod geo;
-pub mod key;
-pub mod server_cmd;
-pub mod pubsub;
+pub mod string;
 pub mod transaction;
-pub mod scripting;
 
 use crate::config::SharedConfig;
 use crate::connection::ClientState;
@@ -23,6 +23,7 @@ use crate::store::SharedStore;
 use tokio::sync::mpsc;
 
 /// Dispatch a parsed command to the appropriate handler.
+#[allow(clippy::too_many_arguments)]
 pub async fn dispatch(
     cmd_name: &str,
     args: &[RespValue],
@@ -50,7 +51,9 @@ pub async fn dispatch(
                 args_preview.join(" ")
             ));
         }
-        client.multi_queue.push((cmd_name.to_string(), args.to_vec()));
+        client
+            .multi_queue
+            .push((cmd_name.to_string(), args.to_vec()));
         return RespValue::SimpleString("QUEUED".to_string());
     }
 
@@ -231,14 +234,20 @@ pub async fn dispatch(
         "XREAD" => stream::cmd_xread(args, store, client).await,
         "XTRIM" => stream::cmd_xtrim(args, store, client).await,
         "XGROUP" => {
-            let sub = args.first().and_then(|a| a.to_string_lossy()).map(|s| s.to_uppercase()).unwrap_or_default();
+            let sub = args
+                .first()
+                .and_then(|a| a.to_string_lossy())
+                .map(|s| s.to_uppercase())
+                .unwrap_or_default();
             match sub.as_str() {
                 "CREATE" => RespValue::ok(),
                 "DESTROY" => RespValue::integer(0),
                 "CREATECONSUMER" => RespValue::integer(1),
                 "DELCONSUMER" => RespValue::integer(0),
                 "SETID" => RespValue::ok(),
-                _ => RespValue::error(format!("ERR unknown subcommand or wrong number of arguments for 'XGROUP' command")),
+                _ => RespValue::error(
+                    "ERR unknown subcommand or wrong number of arguments for 'XGROUP' command",
+                ),
             }
         }
         "XACK" => RespValue::integer(0),
@@ -275,7 +284,18 @@ pub async fn dispatch(
 
         // Transactions
         "MULTI" => transaction::cmd_multi(client),
-        "EXEC" => transaction::cmd_exec(store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await,
+        "EXEC" => {
+            transaction::cmd_exec(
+                store,
+                config,
+                client,
+                pubsub,
+                pubsub_tx,
+                key_watcher,
+                script_cache,
+            )
+            .await
+        }
         "DISCARD" => transaction::cmd_discard(client),
         "WATCH" => transaction::cmd_watch(args, store, client).await,
         "UNWATCH" => transaction::cmd_unwatch(client),
@@ -295,8 +315,32 @@ pub async fn dispatch(
         "LASTSAVE" => server_cmd::cmd_lastsave(),
 
         // Scripting
-        "EVAL" => scripting::cmd_eval(args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await,
-        "EVALSHA" => scripting::cmd_evalsha(args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await,
+        "EVAL" => {
+            scripting::cmd_eval(
+                args,
+                store,
+                config,
+                client,
+                pubsub,
+                pubsub_tx,
+                key_watcher,
+                script_cache,
+            )
+            .await
+        }
+        "EVALSHA" => {
+            scripting::cmd_evalsha(
+                args,
+                store,
+                config,
+                client,
+                pubsub,
+                pubsub_tx,
+                key_watcher,
+                script_cache,
+            )
+            .await
+        }
         "SCRIPT" => scripting::cmd_script(args, script_cache).await,
 
         // Stubs for compatibility
@@ -308,17 +352,19 @@ pub async fn dispatch(
                 return wrong_arg_count("wait");
             }
             match arg_to_i64(&args[0]) {
-                Some(n) if n >= 0 => {},
+                Some(n) if n >= 0 => {}
                 _ => return RespValue::error("ERR value is not an integer or out of range"),
             }
             match arg_to_i64(&args[1]) {
-                Some(t) if t >= 0 => {},
+                Some(t) if t >= 0 => {}
                 _ => return RespValue::error("ERR timeout is not an integer or out of range"),
             }
             // No replication support: 0 replicas acknowledged
             RespValue::integer(0)
         }
-        "FCALL" | "FCALL_RO" => RespValue::error("ERR No matching script. Please use FUNCTION LOAD."),
+        "FCALL" | "FCALL_RO" => {
+            RespValue::error("ERR No matching script. Please use FUNCTION LOAD.")
+        }
         "MONITOR" => {
             client.in_monitor = true;
             RespValue::ok()
@@ -385,29 +431,31 @@ pub async fn dispatch(
             let should_delete = match entry {
                 None => false, // Key doesn't exist: never delete
                 Some(entry) => match &entry.value {
-                    crate::types::RedisValue::String(s) => {
-                        match condition.as_str() {
-                            "IFEQ" => s.as_bytes() == cmp_val.as_slice(),
-                            "IFNE" => s.as_bytes() != cmp_val.as_slice(),
-                            "IFDEQ" => {
-                                let cmp_str = String::from_utf8_lossy(&cmp_val);
-                                if !is_valid_digest(&cmp_str) {
-                                    return RespValue::error("ERR The digest must be exactly 16 hexadecimal characters");
-                                }
-                                let digest = digest_hash(s.as_bytes());
-                                digest.eq_ignore_ascii_case(&cmp_str)
+                    crate::types::RedisValue::String(s) => match condition.as_str() {
+                        "IFEQ" => s.as_bytes() == cmp_val.as_slice(),
+                        "IFNE" => s.as_bytes() != cmp_val.as_slice(),
+                        "IFDEQ" => {
+                            let cmp_str = String::from_utf8_lossy(&cmp_val);
+                            if !is_valid_digest(&cmp_str) {
+                                return RespValue::error(
+                                    "ERR The digest must be exactly 16 hexadecimal characters",
+                                );
                             }
-                            "IFDNE" => {
-                                let cmp_str = String::from_utf8_lossy(&cmp_val);
-                                if !is_valid_digest(&cmp_str) {
-                                    return RespValue::error("ERR The digest must be exactly 16 hexadecimal characters");
-                                }
-                                let digest = digest_hash(s.as_bytes());
-                                !digest.eq_ignore_ascii_case(&cmp_str)
-                            }
-                            _ => return RespValue::error("ERR Invalid condition"),
+                            let digest = digest_hash(s.as_bytes());
+                            digest.eq_ignore_ascii_case(&cmp_str)
                         }
-                    }
+                        "IFDNE" => {
+                            let cmp_str = String::from_utf8_lossy(&cmp_val);
+                            if !is_valid_digest(&cmp_str) {
+                                return RespValue::error(
+                                    "ERR The digest must be exactly 16 hexadecimal characters",
+                                );
+                            }
+                            let digest = digest_hash(s.as_bytes());
+                            !digest.eq_ignore_ascii_case(&cmp_str)
+                        }
+                        _ => return RespValue::error("ERR Invalid condition"),
+                    },
                     _ => return RespValue::error("ERR DELEX only supports string keys"),
                 },
             };
@@ -422,7 +470,13 @@ pub async fn dispatch(
         "PFSELFTEST" => RespValue::ok(),
         "PFDEBUG" => {
             // PFDEBUG encoding key -> return "sparse" or "dense"
-            if args.first().and_then(|a| arg_to_string(a)).map(|s| s.to_uppercase()).as_deref() == Some("ENCODING") {
+            if args
+                .first()
+                .and_then(arg_to_string)
+                .map(|s| s.to_uppercase())
+                .as_deref()
+                == Some("ENCODING")
+            {
                 RespValue::bulk_string(b"sparse".to_vec())
             } else {
                 RespValue::ok()
@@ -430,7 +484,11 @@ pub async fn dispatch(
         }
         "SUBSTR" => string::cmd_getrange(args, store, client).await,
         "MEMORY" => {
-            let sub = args.first().and_then(|a| a.to_string_lossy()).map(|s| s.to_uppercase()).unwrap_or_default();
+            let sub = args
+                .first()
+                .and_then(|a| a.to_string_lossy())
+                .map(|s| s.to_uppercase())
+                .unwrap_or_default();
             match sub.as_str() {
                 "USAGE" => {
                     if let Some(key_val) = args.get(1).and_then(|a| a.to_string_lossy()) {
@@ -452,11 +510,13 @@ pub async fn dispatch(
                                         }
                                     }
                                     crate::types::RedisValue::List(l) => {
-                                        let elem_bytes: usize = l.iter().map(|v| v.len() + 11).sum();
+                                        let elem_bytes: usize =
+                                            l.iter().map(|v| v.len() + 11).sum();
                                         128 + elem_bytes
                                     }
                                     crate::types::RedisValue::Hash(h) => {
-                                        let field_bytes: usize = h.iter().map(|(k, v)| k.len() + v.len() + 24).sum();
+                                        let field_bytes: usize =
+                                            h.iter().map(|(k, v)| k.len() + v.len() + 24).sum();
                                         64 + field_bytes
                                     }
                                     crate::types::RedisValue::Set(s) => {
@@ -486,10 +546,16 @@ pub async fn dispatch(
         "CLUSTER" => RespValue::error("ERR This instance has cluster support disabled"),
         "WAITAOF" => RespValue::array(vec![RespValue::integer(0), RespValue::integer(0)]),
         "ACL" => {
-            let sub = args.first().and_then(|a| a.to_string_lossy()).map(|s| s.to_uppercase()).unwrap_or_default();
+            let sub = args
+                .first()
+                .and_then(|a| a.to_string_lossy())
+                .map(|s| s.to_uppercase())
+                .unwrap_or_default();
             match sub.as_str() {
                 "WHOAMI" => RespValue::bulk_string(b"default".to_vec()),
-                "LIST" => RespValue::array(vec![RespValue::bulk_string(b"user default on ~* &* +@all".to_vec())]),
+                "LIST" => RespValue::array(vec![RespValue::bulk_string(
+                    b"user default on ~* &* +@all".to_vec(),
+                )]),
                 "USERS" => RespValue::array(vec![RespValue::bulk_string(b"default".to_vec())]),
                 "GETUSER" => RespValue::array(vec![
                     RespValue::bulk_string(b"flags".to_vec()),
@@ -536,41 +602,232 @@ pub async fn dispatch(
 
 /// Check if a command name is known (for MULTI queueing error detection).
 fn is_known_command(cmd: &str) -> bool {
-    matches!(cmd,
-        "PING" | "ECHO" | "QUIT" | "SELECT" | "AUTH" | "DBSIZE" | "FLUSHDB" | "FLUSHALL" | "SWAPDB" |
-        "INFO" | "CONFIG" | "TIME" | "COMMAND" | "CLIENT" | "DEBUG" | "RESET" |
-        "GET" | "SET" | "GETEX" | "GETSET" | "MGET" | "MSET" | "MSETNX" | "APPEND" | "STRLEN" | "LCS" |
-        "INCR" | "DECR" | "INCRBY" | "DECRBY" | "INCRBYFLOAT" | "SETNX" | "SETEX" | "PSETEX" |
-        "GETRANGE" | "SETRANGE" | "GETDEL" |
-        "LPUSH" | "RPUSH" | "LPUSHX" | "RPUSHX" | "LPOP" | "RPOP" | "LLEN" | "LRANGE" | "LINDEX" | "LSET" | "LINSERT" |
-        "LREM" | "LTRIM" | "RPOPLPUSH" | "LMOVE" | "LPOS" | "LMPOP" | "BLPOP" | "BRPOP" | "BLMOVE" |
-        "HSET" | "HGET" | "HDEL" | "HEXISTS" | "HLEN" | "HKEYS" | "HVALS" | "HGETALL" | "HMSET" |
-        "HMGET" | "HINCRBY" | "HINCRBYFLOAT" | "HSETNX" | "HRANDFIELD" | "HSCAN" | "HSTRLEN" | "HGETDEL" |
-        "SADD" | "SREM" | "SISMEMBER" | "SMISMEMBER" | "SMEMBERS" | "SCARD" | "SPOP" | "SRANDMEMBER" |
-        "SUNION" | "SINTER" | "SDIFF" | "SUNIONSTORE" | "SINTERSTORE" | "SDIFFSTORE" | "SMOVE" | "SSCAN" | "SINTERCARD" |
-        "ZADD" | "ZREM" | "ZSCORE" | "ZRANK" | "ZREVRANK" | "ZCARD" | "ZCOUNT" | "ZRANGE" | "ZREVRANGE" |
-        "ZRANGEBYSCORE" | "ZREVRANGEBYSCORE" | "ZRANGEBYLEX" | "ZREVRANGEBYLEX" | "ZINCRBY" |
-        "ZUNIONSTORE" | "ZINTERSTORE" | "ZRANDMEMBER" | "ZSCAN" | "ZPOPMIN" | "ZPOPMAX" | "ZMSCORE" |
-        "ZLEXCOUNT" | "ZREMRANGEBYSCORE" | "ZREMRANGEBYLEX" | "ZREMRANGEBYRANK" |
-        "ZUNION" | "ZINTER" | "ZDIFF" | "ZDIFFSTORE" | "ZINTERCARD" | "ZMPOP" |
-        "BZPOPMIN" | "BZPOPMAX" | "BZMPOP" |
-        "XADD" | "XLEN" | "XRANGE" | "XREVRANGE" | "XREAD" | "XTRIM" | "XGROUP" | "XACK" |
-        "XCLAIM" | "XPENDING" | "XREADGROUP" | "XDEL" | "XINFO" |
-        "SETBIT" | "GETBIT" | "BITCOUNT" | "BITOP" | "BITPOS" | "BITFIELD" | "BITFIELD_RO" |
-        "PFADD" | "PFCOUNT" | "PFMERGE" |
-        "GEOADD" | "GEODIST" | "GEOPOS" | "GEOHASH" | "GEOSEARCH" | "GEOSEARCHSTORE" |
-        "GEORADIUS" | "GEORADIUSBYMEMBER" | "GEOMEMBERS" |
-        "DEL" | "UNLINK" | "EXISTS" | "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" |
-        "EXPIRETIME" | "PEXPIRETIME" | "TTL" | "PTTL" | "PERSIST" | "TYPE" | "RENAME" | "RENAMENX" |
-        "KEYS" | "SCAN" | "RANDOMKEY" | "OBJECT" | "SORT" | "SORT_RO" | "COPY" | "MOVE" | "DUMP" | "RESTORE" | "TOUCH" |
-        "SUBSCRIBE" | "UNSUBSCRIBE" | "PUBLISH" | "PSUBSCRIBE" | "PUNSUBSCRIBE" | "PUBSUB" |
-        "MULTI" | "EXEC" | "DISCARD" | "WATCH" | "UNWATCH" |
-        "SAVE" | "BGSAVE" | "BGREWRITEAOF" | "LASTSAVE" |
-        "EVAL" | "EVALSHA" | "SCRIPT" |
-        "FUNCTION" | "HELLO" | "WAIT" | "FCALL" | "FCALL_RO" | "BLMPOP" |
-        "PFSELFTEST" | "PFDEBUG" | "SUBSTR" | "MEMORY" | "SLOWLOG" | "LATENCY" | "CLUSTER" | "MONITOR" |
-        "WAITAOF" | "ACL" | "REPLICAOF" | "SLAVEOF" | "SYNC" | "PSYNC" |
-        "DIGEST" | "DELEX" | "MSETEX"
+    matches!(
+        cmd,
+        "PING"
+            | "ECHO"
+            | "QUIT"
+            | "SELECT"
+            | "AUTH"
+            | "DBSIZE"
+            | "FLUSHDB"
+            | "FLUSHALL"
+            | "SWAPDB"
+            | "INFO"
+            | "CONFIG"
+            | "TIME"
+            | "COMMAND"
+            | "CLIENT"
+            | "DEBUG"
+            | "RESET"
+            | "GET"
+            | "SET"
+            | "GETEX"
+            | "GETSET"
+            | "MGET"
+            | "MSET"
+            | "MSETNX"
+            | "APPEND"
+            | "STRLEN"
+            | "LCS"
+            | "INCR"
+            | "DECR"
+            | "INCRBY"
+            | "DECRBY"
+            | "INCRBYFLOAT"
+            | "SETNX"
+            | "SETEX"
+            | "PSETEX"
+            | "GETRANGE"
+            | "SETRANGE"
+            | "GETDEL"
+            | "LPUSH"
+            | "RPUSH"
+            | "LPUSHX"
+            | "RPUSHX"
+            | "LPOP"
+            | "RPOP"
+            | "LLEN"
+            | "LRANGE"
+            | "LINDEX"
+            | "LSET"
+            | "LINSERT"
+            | "LREM"
+            | "LTRIM"
+            | "RPOPLPUSH"
+            | "LMOVE"
+            | "LPOS"
+            | "LMPOP"
+            | "BLPOP"
+            | "BRPOP"
+            | "BLMOVE"
+            | "HSET"
+            | "HGET"
+            | "HDEL"
+            | "HEXISTS"
+            | "HLEN"
+            | "HKEYS"
+            | "HVALS"
+            | "HGETALL"
+            | "HMSET"
+            | "HMGET"
+            | "HINCRBY"
+            | "HINCRBYFLOAT"
+            | "HSETNX"
+            | "HRANDFIELD"
+            | "HSCAN"
+            | "HSTRLEN"
+            | "HGETDEL"
+            | "SADD"
+            | "SREM"
+            | "SISMEMBER"
+            | "SMISMEMBER"
+            | "SMEMBERS"
+            | "SCARD"
+            | "SPOP"
+            | "SRANDMEMBER"
+            | "SUNION"
+            | "SINTER"
+            | "SDIFF"
+            | "SUNIONSTORE"
+            | "SINTERSTORE"
+            | "SDIFFSTORE"
+            | "SMOVE"
+            | "SSCAN"
+            | "SINTERCARD"
+            | "ZADD"
+            | "ZREM"
+            | "ZSCORE"
+            | "ZRANK"
+            | "ZREVRANK"
+            | "ZCARD"
+            | "ZCOUNT"
+            | "ZRANGE"
+            | "ZREVRANGE"
+            | "ZRANGEBYSCORE"
+            | "ZREVRANGEBYSCORE"
+            | "ZRANGEBYLEX"
+            | "ZREVRANGEBYLEX"
+            | "ZINCRBY"
+            | "ZUNIONSTORE"
+            | "ZINTERSTORE"
+            | "ZRANDMEMBER"
+            | "ZSCAN"
+            | "ZPOPMIN"
+            | "ZPOPMAX"
+            | "ZMSCORE"
+            | "ZLEXCOUNT"
+            | "ZREMRANGEBYSCORE"
+            | "ZREMRANGEBYLEX"
+            | "ZREMRANGEBYRANK"
+            | "ZUNION"
+            | "ZINTER"
+            | "ZDIFF"
+            | "ZDIFFSTORE"
+            | "ZINTERCARD"
+            | "ZMPOP"
+            | "BZPOPMIN"
+            | "BZPOPMAX"
+            | "BZMPOP"
+            | "XADD"
+            | "XLEN"
+            | "XRANGE"
+            | "XREVRANGE"
+            | "XREAD"
+            | "XTRIM"
+            | "XGROUP"
+            | "XACK"
+            | "XCLAIM"
+            | "XPENDING"
+            | "XREADGROUP"
+            | "XDEL"
+            | "XINFO"
+            | "SETBIT"
+            | "GETBIT"
+            | "BITCOUNT"
+            | "BITOP"
+            | "BITPOS"
+            | "BITFIELD"
+            | "BITFIELD_RO"
+            | "PFADD"
+            | "PFCOUNT"
+            | "PFMERGE"
+            | "GEOADD"
+            | "GEODIST"
+            | "GEOPOS"
+            | "GEOHASH"
+            | "GEOSEARCH"
+            | "GEOSEARCHSTORE"
+            | "GEORADIUS"
+            | "GEORADIUSBYMEMBER"
+            | "GEOMEMBERS"
+            | "DEL"
+            | "UNLINK"
+            | "EXISTS"
+            | "EXPIRE"
+            | "PEXPIRE"
+            | "EXPIREAT"
+            | "PEXPIREAT"
+            | "EXPIRETIME"
+            | "PEXPIRETIME"
+            | "TTL"
+            | "PTTL"
+            | "PERSIST"
+            | "TYPE"
+            | "RENAME"
+            | "RENAMENX"
+            | "KEYS"
+            | "SCAN"
+            | "RANDOMKEY"
+            | "OBJECT"
+            | "SORT"
+            | "SORT_RO"
+            | "COPY"
+            | "MOVE"
+            | "DUMP"
+            | "RESTORE"
+            | "TOUCH"
+            | "SUBSCRIBE"
+            | "UNSUBSCRIBE"
+            | "PUBLISH"
+            | "PSUBSCRIBE"
+            | "PUNSUBSCRIBE"
+            | "PUBSUB"
+            | "MULTI"
+            | "EXEC"
+            | "DISCARD"
+            | "WATCH"
+            | "UNWATCH"
+            | "SAVE"
+            | "BGSAVE"
+            | "BGREWRITEAOF"
+            | "LASTSAVE"
+            | "EVAL"
+            | "EVALSHA"
+            | "SCRIPT"
+            | "FUNCTION"
+            | "HELLO"
+            | "WAIT"
+            | "FCALL"
+            | "FCALL_RO"
+            | "BLMPOP"
+            | "PFSELFTEST"
+            | "PFDEBUG"
+            | "SUBSTR"
+            | "MEMORY"
+            | "SLOWLOG"
+            | "LATENCY"
+            | "CLUSTER"
+            | "MONITOR"
+            | "WAITAOF"
+            | "ACL"
+            | "REPLICAOF"
+            | "SLAVEOF"
+            | "SYNC"
+            | "PSYNC"
+            | "DIGEST"
+            | "DELEX"
+            | "MSETEX"
     )
 }
 

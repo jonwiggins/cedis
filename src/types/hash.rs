@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 /// Redis hash type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RedisHash {
     data: HashMap<String, Vec<u8>>,
 }
@@ -53,8 +53,7 @@ impl RedisHash {
     pub fn incr_by(&mut self, field: &str, delta: i64) -> Result<i64, &'static str> {
         let current = match self.data.get(field) {
             Some(v) => {
-                let s = std::str::from_utf8(v)
-                    .map_err(|_| "hash value is not an integer")?;
+                let s = std::str::from_utf8(v).map_err(|_| "hash value is not an integer")?;
                 s.parse::<i64>()
                     .map_err(|_| "hash value is not an integer")?
             }
@@ -71,8 +70,7 @@ impl RedisHash {
     pub fn incr_by_float(&mut self, field: &str, delta: f64) -> Result<f64, &'static str> {
         let current = match self.data.get(field) {
             Some(v) => {
-                let s = std::str::from_utf8(v)
-                    .map_err(|_| "hash value is not a valid float")?;
+                let s = std::str::from_utf8(v).map_err(|_| "hash value is not a valid float")?;
                 s.parse::<f64>()
                     .map_err(|_| "hash value is not a valid float")?
             }
@@ -88,11 +86,13 @@ impl RedisHash {
     }
 
     pub fn setnx(&mut self, field: String, value: Vec<u8>) -> bool {
-        if self.data.contains_key(&field) {
-            false
-        } else {
-            self.data.insert(field, value);
-            true
+        use std::collections::hash_map::Entry;
+        match self.data.entry(field) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(e) => {
+                e.insert(value);
+                true
+            }
         }
     }
 
@@ -102,6 +102,8 @@ impl RedisHash {
 
     /// Check if any field name or value exceeds the given byte length.
     pub fn has_long_entry(&self, max_bytes: usize) -> bool {
-        self.data.iter().any(|(k, v)| k.len() > max_bytes || v.len() > max_bytes)
+        self.data
+            .iter()
+            .any(|(k, v)| k.len() > max_bytes || v.len() > max_bytes)
     }
 }

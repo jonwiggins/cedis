@@ -8,12 +8,12 @@ use crate::resp::{RespParser, RespValue};
 use crate::scripting::ScriptCache;
 use crate::store::SharedStore;
 use bytes::BytesMut;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info};
 
 type SharedChangeCounter = Arc<AtomicU64>;
@@ -100,6 +100,7 @@ pub async fn run_server(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     mut stream: TcpStream,
     store: SharedStore,
@@ -253,23 +254,82 @@ async fn handle_connection(
 fn is_write_command(cmd: &str) -> bool {
     matches!(
         cmd,
-        "SET" | "SETNX" | "SETEX" | "PSETEX" | "MSET" | "MSETNX" | "APPEND"
-            | "INCR" | "DECR" | "INCRBY" | "DECRBY" | "INCRBYFLOAT"
-            | "SETRANGE" | "GETSET" | "GETDEL"
-            | "DEL" | "UNLINK" | "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" | "PERSIST"
-            | "RENAME" | "RENAMENX"
-            | "LPUSH" | "RPUSH" | "LPUSHX" | "RPUSHX" | "LPOP" | "RPOP" | "LSET" | "LINSERT" | "LREM" | "LTRIM"
-            | "RPOPLPUSH" | "LMOVE" | "LMPOP" | "BLPOP" | "BRPOP" | "BLMOVE" | "BLMPOP"
-            | "HSET" | "HDEL" | "HINCRBY" | "HINCRBYFLOAT" | "HSETNX" | "HMSET"
-            | "SADD" | "SREM" | "SPOP" | "SMOVE"
-            | "ZADD" | "ZREM" | "ZINCRBY" | "ZUNIONSTORE" | "ZINTERSTORE" | "ZPOPMIN" | "ZPOPMAX"
-            | "SETBIT" | "PFADD" | "PFMERGE" | "XADD" | "XTRIM" | "BITOP"
-            | "GEOADD" | "COPY"
-            | "FLUSHDB" | "FLUSHALL" | "SWAPDB" | "SELECT"
-            | "EVAL" | "EVALSHA"
+        "SET"
+            | "SETNX"
+            | "SETEX"
+            | "PSETEX"
+            | "MSET"
+            | "MSETNX"
+            | "APPEND"
+            | "INCR"
+            | "DECR"
+            | "INCRBY"
+            | "DECRBY"
+            | "INCRBYFLOAT"
+            | "SETRANGE"
+            | "GETSET"
+            | "GETDEL"
+            | "DEL"
+            | "UNLINK"
+            | "EXPIRE"
+            | "PEXPIRE"
+            | "EXPIREAT"
+            | "PEXPIREAT"
+            | "PERSIST"
+            | "RENAME"
+            | "RENAMENX"
+            | "LPUSH"
+            | "RPUSH"
+            | "LPUSHX"
+            | "RPUSHX"
+            | "LPOP"
+            | "RPOP"
+            | "LSET"
+            | "LINSERT"
+            | "LREM"
+            | "LTRIM"
+            | "RPOPLPUSH"
+            | "LMOVE"
+            | "LMPOP"
+            | "BLPOP"
+            | "BRPOP"
+            | "BLMOVE"
+            | "BLMPOP"
+            | "HSET"
+            | "HDEL"
+            | "HINCRBY"
+            | "HINCRBYFLOAT"
+            | "HSETNX"
+            | "HMSET"
+            | "SADD"
+            | "SREM"
+            | "SPOP"
+            | "SMOVE"
+            | "ZADD"
+            | "ZREM"
+            | "ZINCRBY"
+            | "ZUNIONSTORE"
+            | "ZINTERSTORE"
+            | "ZPOPMIN"
+            | "ZPOPMAX"
+            | "SETBIT"
+            | "PFADD"
+            | "PFMERGE"
+            | "XADD"
+            | "XTRIM"
+            | "BITOP"
+            | "GEOADD"
+            | "COPY"
+            | "FLUSHDB"
+            | "FLUSHALL"
+            | "SWAPDB"
+            | "SELECT"
+            | "EVAL"
+            | "EVALSHA"
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_command(
     value: RespValue,
     store: &SharedStore,
@@ -302,7 +362,8 @@ async fn process_command(
             .unwrap_or_default();
         let secs = timestamp.as_secs();
         let micros = timestamp.subsec_micros();
-        let args_str: Vec<String> = args.iter()
+        let args_str: Vec<String> = args
+            .iter()
             .filter_map(|a| a.to_string_lossy())
             .map(|s| format!("\"{}\"", s))
             .collect();
@@ -323,7 +384,8 @@ async fn process_command(
     // In subscribe mode, only allow certain commands
     if client.in_subscribe_mode() {
         match cmd_name.as_str() {
-            "SUBSCRIBE" | "UNSUBSCRIBE" | "PSUBSCRIBE" | "PUNSUBSCRIBE" | "PING" | "QUIT" | "RESET" => {}
+            "SUBSCRIBE" | "UNSUBSCRIBE" | "PSUBSCRIBE" | "PUNSUBSCRIBE" | "PING" | "QUIT"
+            | "RESET" => {}
             _ => {
                 return RespValue::error(format!(
                     "ERR Can't execute '{cmd_name}': only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context"
@@ -355,7 +417,18 @@ async fn process_command(
         change_counter.fetch_add(1, Ordering::Relaxed);
     }
 
-    let response = command::dispatch(&cmd_name, args, store, config, client, pubsub, pubsub_tx, key_watcher, script_cache).await;
+    let response = command::dispatch(
+        &cmd_name,
+        args,
+        store,
+        config,
+        client,
+        pubsub,
+        pubsub_tx,
+        key_watcher,
+        script_cache,
+    )
+    .await;
 
     // Touch modified keys for WATCH support
     if is_write {
@@ -442,14 +515,18 @@ async fn auto_save_loop(store: SharedStore, config: SharedConfig, changes: Share
         tokio::time::sleep(Duration::from_secs(1)).await;
         let (save_rules, dir, dbfilename) = {
             let cfg = config.read().await;
-            (cfg.save_rules.clone(), cfg.dir.clone(), cfg.dbfilename.clone())
+            (
+                cfg.save_rules.clone(),
+                cfg.dir.clone(),
+                cfg.dbfilename.clone(),
+            )
         };
         let current_changes = changes.load(Ordering::Relaxed);
         let elapsed = last_save.elapsed().as_secs();
 
-        let should_save = save_rules.iter().any(|(secs, min_changes)| {
-            elapsed >= *secs && current_changes >= *min_changes
-        });
+        let should_save = save_rules
+            .iter()
+            .any(|(secs, min_changes)| elapsed >= *secs && current_changes >= *min_changes);
 
         if should_save && current_changes > 0 {
             let store = store.read().await;
@@ -485,15 +562,15 @@ async fn memory_eviction_loop(store: SharedStore, config: SharedConfig) {
         // Evict keys until under limit or no more keys
         for _ in 0..10 {
             let evicted = match policy.as_str() {
-                "allkeys-random" => {
-                    store.databases.iter_mut().any(|db| db.evict_one_random())
-                }
-                "volatile-random" => {
-                    store.databases.iter_mut().any(|db| db.evict_one_volatile_random())
-                }
-                "volatile-ttl" => {
-                    store.databases.iter_mut().any(|db| db.evict_one_volatile_ttl())
-                }
+                "allkeys-random" => store.databases.iter_mut().any(|db| db.evict_one_random()),
+                "volatile-random" => store
+                    .databases
+                    .iter_mut()
+                    .any(|db| db.evict_one_volatile_random()),
+                "volatile-ttl" => store
+                    .databases
+                    .iter_mut()
+                    .any(|db| db.evict_one_volatile_ttl()),
                 _ => false, // noeviction - do nothing
             };
             if !evicted {

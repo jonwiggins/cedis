@@ -30,12 +30,12 @@ fn glob_match_bytes(pattern: &[u8], string: &[u8]) -> bool {
                     continue;
                 }
                 b'[' => {
-                    if let Some((matched, new_pi)) = match_bracket(&pattern[pi..], string[si]) {
-                        if matched {
-                            pi += new_pi;
-                            si += 1;
-                            continue;
-                        }
+                    if let Some((matched, new_pi)) = match_bracket(&pattern[pi..], string[si])
+                        && matched
+                    {
+                        pi += new_pi;
+                        si += 1;
+                        continue;
                     }
                     // Fall through to star backtrack
                 }

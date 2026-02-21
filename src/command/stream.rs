@@ -62,11 +62,7 @@ fn parse_range_bound(s: &str, is_min: bool) -> Option<StreamEntryId> {
 }
 
 /// XADD key [MAXLEN [~] count] id_or_star field value [field value ...]
-pub async fn cmd_xadd(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_xadd(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     // Minimum: key id field value = 4 args
     if args.len() < 4 {
         return wrong_arg_count("xadd");
@@ -81,28 +77,28 @@ pub async fn cmd_xadd(
     let mut maxlen: Option<usize> = None;
 
     // Check for MAXLEN option
-    if let Some(opt) = arg_to_string(&args[idx]) {
-        if opt.eq_ignore_ascii_case("MAXLEN") {
+    if let Some(opt) = arg_to_string(&args[idx])
+        && opt.eq_ignore_ascii_case("MAXLEN")
+    {
+        idx += 1;
+        if idx >= args.len() {
+            return wrong_arg_count("xadd");
+        }
+        // Check for optional ~ (approximate trimming, we treat same as exact)
+        if let Some(tilde) = arg_to_string(&args[idx])
+            && tilde == "~"
+        {
             idx += 1;
             if idx >= args.len() {
                 return wrong_arg_count("xadd");
             }
-            // Check for optional ~ (approximate trimming, we treat same as exact)
-            if let Some(tilde) = arg_to_string(&args[idx]) {
-                if tilde == "~" {
-                    idx += 1;
-                    if idx >= args.len() {
-                        return wrong_arg_count("xadd");
-                    }
-                }
+        }
+        match arg_to_i64(&args[idx]) {
+            Some(n) if n >= 0 => {
+                maxlen = Some(n as usize);
+                idx += 1;
             }
-            match arg_to_i64(&args[idx]) {
-                Some(n) if n >= 0 => {
-                    maxlen = Some(n as usize);
-                    idx += 1;
-                }
-                _ => return RespValue::error("ERR value is not an integer or out of range"),
-            }
+            _ => return RespValue::error("ERR value is not an integer or out of range"),
         }
     }
 
@@ -118,7 +114,7 @@ pub async fn cmd_xadd(
 
     // Remaining args are field-value pairs
     let remaining = &args[idx..];
-    if remaining.is_empty() || remaining.len() % 2 != 0 {
+    if remaining.is_empty() || !remaining.len().is_multiple_of(2) {
         return wrong_arg_count("xadd");
     }
 
@@ -143,7 +139,11 @@ pub async fn cmd_xadd(
         Err(e) => return e,
     };
 
-    let id_arg = if id_str == "*" { None } else { Some(id_str.as_str()) };
+    let id_arg = if id_str == "*" {
+        None
+    } else {
+        Some(id_str.as_str())
+    };
     let entry_id = stream.add(id_arg, fields);
 
     // Apply MAXLEN trimming if specified
@@ -155,11 +155,7 @@ pub async fn cmd_xadd(
 }
 
 /// XLEN key
-pub async fn cmd_xlen(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_xlen(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("xlen");
     }
@@ -208,23 +204,26 @@ pub async fn cmd_xrange(
 
     let start = match parse_range_bound(&start_str, true) {
         Some(id) => id,
-        None => return RespValue::error("ERR Invalid stream ID specified as stream command argument"),
+        None => {
+            return RespValue::error("ERR Invalid stream ID specified as stream command argument");
+        }
     };
 
     let end = match parse_range_bound(&end_str, false) {
         Some(id) => id,
-        None => return RespValue::error("ERR Invalid stream ID specified as stream command argument"),
+        None => {
+            return RespValue::error("ERR Invalid stream ID specified as stream command argument");
+        }
     };
 
     let mut count: Option<usize> = None;
-    if args.len() >= 5 {
-        if let Some(opt) = arg_to_string(&args[3]) {
-            if opt.eq_ignore_ascii_case("COUNT") {
-                match arg_to_i64(&args[4]) {
-                    Some(n) if n >= 0 => count = Some(n as usize),
-                    _ => return RespValue::error("ERR value is not an integer or out of range"),
-                }
-            }
+    if args.len() >= 5
+        && let Some(opt) = arg_to_string(&args[3])
+        && opt.eq_ignore_ascii_case("COUNT")
+    {
+        match arg_to_i64(&args[4]) {
+            Some(n) if n >= 0 => count = Some(n as usize),
+            _ => return RespValue::error("ERR value is not an integer or out of range"),
         }
     }
 
@@ -279,23 +278,26 @@ pub async fn cmd_xrevrange(
 
     let end = match parse_range_bound(&end_str, false) {
         Some(id) => id,
-        None => return RespValue::error("ERR Invalid stream ID specified as stream command argument"),
+        None => {
+            return RespValue::error("ERR Invalid stream ID specified as stream command argument");
+        }
     };
 
     let start = match parse_range_bound(&start_str, true) {
         Some(id) => id,
-        None => return RespValue::error("ERR Invalid stream ID specified as stream command argument"),
+        None => {
+            return RespValue::error("ERR Invalid stream ID specified as stream command argument");
+        }
     };
 
     let mut count: Option<usize> = None;
-    if args.len() >= 5 {
-        if let Some(opt) = arg_to_string(&args[3]) {
-            if opt.eq_ignore_ascii_case("COUNT") {
-                match arg_to_i64(&args[4]) {
-                    Some(n) if n >= 0 => count = Some(n as usize),
-                    _ => return RespValue::error("ERR value is not an integer or out of range"),
-                }
-            }
+    if args.len() >= 5
+        && let Some(opt) = arg_to_string(&args[3])
+        && opt.eq_ignore_ascii_case("COUNT")
+    {
+        match arg_to_i64(&args[4]) {
+            Some(n) if n >= 0 => count = Some(n as usize),
+            _ => return RespValue::error("ERR value is not an integer or out of range"),
         }
     }
 
@@ -324,11 +326,7 @@ pub async fn cmd_xrevrange(
 
 /// XREAD [COUNT count] STREAMS key [key ...] id [id ...]
 /// Non-blocking only.
-pub async fn cmd_xread(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_xread(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("xread");
     }
@@ -373,7 +371,7 @@ pub async fn cmd_xread(
     // After STREAMS keyword, we have keys followed by IDs
     // The number of keys == number of IDs, and they split evenly
     let remaining = &args[idx..];
-    if remaining.is_empty() || remaining.len() % 2 != 0 {
+    if remaining.is_empty() || !remaining.len().is_multiple_of(2) {
         return wrong_arg_count("xread");
     }
 
@@ -414,7 +412,11 @@ pub async fn cmd_xread(
                                 // XREAD returns entries with IDs strictly greater than the given ID
                                 StreamEntryId::new(id.ms, id.seq + 1)
                             }
-                            None => return RespValue::error("ERR Invalid stream ID specified as stream command argument"),
+                            None => {
+                                return RespValue::error(
+                                    "ERR Invalid stream ID specified as stream command argument",
+                                );
+                            }
                         }
                     };
 
@@ -459,11 +461,7 @@ pub async fn cmd_xread(
 }
 
 /// XDEL key id [id ...]
-pub async fn cmd_xdel(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_xdel(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("xdel");
     }
@@ -477,7 +475,11 @@ pub async fn cmd_xdel(
     for arg in &args[1..] {
         match arg_to_string(arg).and_then(|s| StreamEntryId::parse(&s)) {
             Some(id) => ids.push(id),
-            None => return RespValue::error("ERR Invalid stream ID specified as stream command argument"),
+            None => {
+                return RespValue::error(
+                    "ERR Invalid stream ID specified as stream command argument",
+                );
+            }
         }
     }
 
@@ -497,11 +499,7 @@ pub async fn cmd_xdel(
 }
 
 /// XINFO STREAM key [FULL [COUNT count]]
-pub async fn cmd_xinfo(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_xinfo(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("xinfo");
     }
@@ -557,7 +555,9 @@ pub async fn cmd_xinfo(
         "GROUPS" => RespValue::array(vec![]),
         "CONSUMERS" => RespValue::array(vec![]),
         "HELP" => RespValue::array(vec![
-            RespValue::bulk_string(b"XINFO <subcommand> [<arg> [value] [opt] ...]. Subcommands are:".to_vec()),
+            RespValue::bulk_string(
+                b"XINFO <subcommand> [<arg> [value] [opt] ...]. Subcommands are:".to_vec(),
+            ),
             RespValue::bulk_string(b"CONSUMERS <key> <groupname>".to_vec()),
             RespValue::bulk_string(b"GROUPS <key>".to_vec()),
             RespValue::bulk_string(b"STREAM <key> [FULL [COUNT <count>]]".to_vec()),
@@ -568,11 +568,7 @@ pub async fn cmd_xinfo(
 }
 
 /// XTRIM key MAXLEN [~] count
-pub async fn cmd_xtrim(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_xtrim(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("xtrim");
     }
@@ -597,12 +593,12 @@ pub async fn cmd_xtrim(
     }
 
     // Check for optional ~ (approximate trimming, treated same as exact)
-    if let Some(tilde) = arg_to_string(&args[idx]) {
-        if tilde == "~" {
-            idx += 1;
-            if idx >= args.len() {
-                return wrong_arg_count("xtrim");
-            }
+    if let Some(tilde) = arg_to_string(&args[idx])
+        && tilde == "~"
+    {
+        idx += 1;
+        if idx >= args.len() {
+            return wrong_arg_count("xtrim");
         }
     }
 

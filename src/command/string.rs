@@ -1,4 +1,6 @@
-use crate::command::{arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error};
+use crate::command::{
+    arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error,
+};
 use crate::connection::ClientState;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
@@ -167,25 +169,29 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
 
         let condition_met = if let Some(ref eq_val) = ifeq {
             // IFEQ: key must exist and value must equal
-            current_bytes.as_ref().map_or(false, |b| b == eq_val)
+            current_bytes.as_ref().is_some_and(|b| b == eq_val)
         } else if let Some(ref ne_val) = ifne {
             // IFNE: key doesn't exist (OK) or value differs
-            current_bytes.as_ref().map_or(true, |b| b != ne_val)
+            current_bytes.as_ref().is_none_or(|b| b != ne_val)
         } else if let Some(ref digest) = ifdeq {
             // IFDEQ: key must exist and digest of value must equal
             if !crate::command::is_valid_digest(digest) {
-                return RespValue::error("ERR The digest must be exactly 16 hexadecimal characters");
+                return RespValue::error(
+                    "ERR The digest must be exactly 16 hexadecimal characters",
+                );
             }
-            current_bytes.as_ref().map_or(false, |b| {
+            current_bytes.as_ref().is_some_and(|b| {
                 let hash = crate::command::digest_hash(b);
                 hash.eq_ignore_ascii_case(digest)
             })
         } else if let Some(ref digest) = ifdne {
             // IFDNE: key doesn't exist (OK) or digest of value differs
             if !crate::command::is_valid_digest(digest) {
-                return RespValue::error("ERR The digest must be exactly 16 hexadecimal characters");
+                return RespValue::error(
+                    "ERR The digest must be exactly 16 hexadecimal characters",
+                );
             }
-            current_bytes.as_ref().map_or(true, |b| {
+            current_bytes.as_ref().is_none_or(|b| {
                 let hash = crate::command::digest_hash(b);
                 !hash.eq_ignore_ascii_case(digest)
             })
@@ -300,7 +306,7 @@ pub async fn cmd_mget(args: &[RespValue], store: &SharedStore, client: &ClientSt
 }
 
 pub async fn cmd_mset(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
-    if args.is_empty() || args.len() % 2 != 0 {
+    if args.is_empty() || !args.len().is_multiple_of(2) {
         return wrong_arg_count("mset");
     }
 
@@ -327,7 +333,7 @@ pub async fn cmd_msetnx(
     store: &SharedStore,
     client: &ClientState,
 ) -> RespValue {
-    if args.is_empty() || args.len() % 2 != 0 {
+    if args.is_empty() || !args.len().is_multiple_of(2) {
         return wrong_arg_count("msetnx");
     }
 
@@ -457,19 +463,11 @@ async fn incr_decr(
     }
 }
 
-pub async fn cmd_incr(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_incr(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     incr_decr(args, store, client, 1).await
 }
 
-pub async fn cmd_decr(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_decr(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     incr_decr(args, store, client, -1).await
 }
 
@@ -547,11 +545,7 @@ pub async fn cmd_incrbyfloat(
     }
 }
 
-pub async fn cmd_setnx(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_setnx(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 2 {
         return wrong_arg_count("setnx");
     }
@@ -575,11 +569,7 @@ pub async fn cmd_setnx(
     }
 }
 
-pub async fn cmd_setex(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_setex(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("setex");
     }
@@ -701,12 +691,10 @@ pub async fn cmd_setrange(
 
     match db.get_mut(&key) {
         Some(entry) => match &mut entry.value {
-            RedisValue::String(s) => {
-                match s.setrange(offset, &value) {
-                    Ok(new_len) => RespValue::integer(new_len as i64),
-                    Err(_) => RespValue::error("ERR string exceeds maximum allowed size (512MB)"),
-                }
-            }
+            RedisValue::String(s) => match s.setrange(offset, &value) {
+                Ok(new_len) => RespValue::integer(new_len as i64),
+                Err(_) => RespValue::error("ERR string exceeds maximum allowed size (512MB)"),
+            },
             _ => wrong_type_error(),
         },
         None => {
@@ -755,11 +743,7 @@ pub async fn cmd_getdel(
 }
 
 /// GETEX key [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | PERSIST]
-pub async fn cmd_getex(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_getex(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("getex");
     }
@@ -814,22 +798,18 @@ pub async fn cmd_getex(
                     _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
                 }
             }
-            "EXAT" => {
-                match args.get(2).and_then(arg_to_i64) {
-                    Some(ts) if ts > 0 => {
-                        db.set_expiry(&key, (ts as u64) * 1000);
-                    }
-                    _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
+            "EXAT" => match args.get(2).and_then(arg_to_i64) {
+                Some(ts) if ts > 0 => {
+                    db.set_expiry(&key, (ts as u64) * 1000);
                 }
-            }
-            "PXAT" => {
-                match args.get(2).and_then(arg_to_i64) {
-                    Some(ts) if ts > 0 => {
-                        db.set_expiry(&key, ts as u64);
-                    }
-                    _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
+                _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
+            },
+            "PXAT" => match args.get(2).and_then(arg_to_i64) {
+                Some(ts) if ts > 0 => {
+                    db.set_expiry(&key, ts as u64);
                 }
-            }
+                _ => return RespValue::error("ERR invalid expire time in 'getex' command"),
+            },
             "PERSIST" => {
                 db.persist(&key);
             }
@@ -841,7 +821,11 @@ pub async fn cmd_getex(
 }
 
 /// MSETEX numkeys key value [key value ...] [EX seconds | PX ms | EXAT ts | PXAT ts | KEEPTTL] [NX | XX]
-pub async fn cmd_msetex(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_msetex(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("msetex");
     }
@@ -887,47 +871,61 @@ pub async fn cmd_msetex(args: &[RespValue], store: &SharedStore, client: &Client
         };
         match flag.as_str() {
             "EX" => {
-                if expire_ms.is_some() || keepttl { return RespValue::error("ERR syntax error"); }
+                if expire_ms.is_some() || keepttl {
+                    return RespValue::error("ERR syntax error");
+                }
                 i += 1;
-                match args.get(i).and_then(|a| arg_to_i64(a)) {
+                match args.get(i).and_then(arg_to_i64) {
                     Some(s) if s > 0 => expire_ms = Some(s as u64 * 1000),
                     _ => return RespValue::error("ERR invalid expire time in 'msetex' command"),
                 }
             }
             "PX" => {
-                if expire_ms.is_some() || keepttl { return RespValue::error("ERR syntax error"); }
+                if expire_ms.is_some() || keepttl {
+                    return RespValue::error("ERR syntax error");
+                }
                 i += 1;
-                match args.get(i).and_then(|a| arg_to_i64(a)) {
+                match args.get(i).and_then(arg_to_i64) {
                     Some(ms) if ms > 0 => expire_ms = Some(ms as u64),
                     _ => return RespValue::error("ERR invalid expire time in 'msetex' command"),
                 }
             }
             "EXAT" => {
-                if expire_ms.is_some() || keepttl { return RespValue::error("ERR syntax error"); }
+                if expire_ms.is_some() || keepttl {
+                    return RespValue::error("ERR syntax error");
+                }
                 i += 1;
-                match args.get(i).and_then(|a| arg_to_i64(a)) {
+                match args.get(i).and_then(arg_to_i64) {
                     Some(ts) if ts > 0 => expire_ms = Some(ts as u64 * 1000),
                     _ => return RespValue::error("ERR invalid expire time in 'msetex' command"),
                 }
             }
             "PXAT" => {
-                if expire_ms.is_some() || keepttl { return RespValue::error("ERR syntax error"); }
+                if expire_ms.is_some() || keepttl {
+                    return RespValue::error("ERR syntax error");
+                }
                 i += 1;
-                match args.get(i).and_then(|a| arg_to_i64(a)) {
+                match args.get(i).and_then(arg_to_i64) {
                     Some(ts) if ts > 0 => expire_ms = Some(ts as u64),
                     _ => return RespValue::error("ERR invalid expire time in 'msetex' command"),
                 }
             }
             "KEEPTTL" => {
-                if expire_ms.is_some() { return RespValue::error("ERR syntax error"); }
+                if expire_ms.is_some() {
+                    return RespValue::error("ERR syntax error");
+                }
                 keepttl = true;
             }
             "NX" => {
-                if xx { return RespValue::error("ERR syntax error"); }
+                if xx {
+                    return RespValue::error("ERR syntax error");
+                }
                 nx = true;
             }
             "XX" => {
-                if nx { return RespValue::error("ERR syntax error"); }
+                if nx {
+                    return RespValue::error("ERR syntax error");
+                }
                 xx = true;
             }
             _ => return RespValue::error("ERR syntax error"),
@@ -979,8 +977,14 @@ pub async fn cmd_lcs(args: &[RespValue], store: &SharedStore, client: &ClientSta
     if args.len() < 2 {
         return wrong_arg_count("lcs");
     }
-    let key1 = match arg_to_string(&args[0]) { Some(k) => k, None => return wrong_arg_count("lcs") };
-    let key2 = match arg_to_string(&args[1]) { Some(k) => k, None => return wrong_arg_count("lcs") };
+    let key1 = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return wrong_arg_count("lcs"),
+    };
+    let key2 = match arg_to_string(&args[1]) {
+        Some(k) => k,
+        None => return wrong_arg_count("lcs"),
+    };
 
     let mut get_len = false;
     let mut get_idx = false;
@@ -988,13 +992,16 @@ pub async fn cmd_lcs(args: &[RespValue], store: &SharedStore, client: &ClientSta
     let mut with_match_len = false;
     let mut i = 2;
     while i < args.len() {
-        let opt = match arg_to_string(&args[i]) { Some(s) => s.to_uppercase(), None => return RespValue::error("ERR syntax error") };
+        let opt = match arg_to_string(&args[i]) {
+            Some(s) => s.to_uppercase(),
+            None => return RespValue::error("ERR syntax error"),
+        };
         match opt.as_str() {
             "LEN" => get_len = true,
             "IDX" => get_idx = true,
             "MINMATCHLEN" => {
                 i += 1;
-                min_match_len = match args.get(i).and_then(|a| arg_to_i64(a)) {
+                min_match_len = match args.get(i).and_then(arg_to_i64) {
                     Some(n) if n >= 0 => n as usize,
                     _ => return RespValue::error("ERR syntax error"),
                 };
@@ -1007,14 +1014,20 @@ pub async fn cmd_lcs(args: &[RespValue], store: &SharedStore, client: &ClientSta
 
     let mut store = store.write().await;
     let db = &mut store.databases[client.db_index];
-    let a = db.get(&key1).and_then(|e| match &e.value {
-        RedisValue::String(s) => Some(s.as_bytes().to_vec()),
-        _ => None,
-    }).unwrap_or_default();
-    let b = db.get(&key2).and_then(|e| match &e.value {
-        RedisValue::String(s) => Some(s.as_bytes().to_vec()),
-        _ => None,
-    }).unwrap_or_default();
+    let a = db
+        .get(&key1)
+        .and_then(|e| match &e.value {
+            RedisValue::String(s) => Some(s.as_bytes().to_vec()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let b = db
+        .get(&key2)
+        .and_then(|e| match &e.value {
+            RedisValue::String(s) => Some(s.as_bytes().to_vec()),
+            _ => None,
+        })
+        .unwrap_or_default();
 
     let m = a.len();
     let n = b.len();
@@ -1069,12 +1082,20 @@ pub async fn cmd_lcs(args: &[RespValue], store: &SharedStore, client: &ClientSta
         let mut result_matches = Vec::new();
         for (ai_start, ai_end, bj_start, bj_end, match_len) in &matches {
             let pair = vec![
-                RespValue::array(vec![RespValue::Integer(*ai_start as i64), RespValue::Integer(*ai_end as i64)]),
-                RespValue::array(vec![RespValue::Integer(*bj_start as i64), RespValue::Integer(*bj_end as i64)]),
+                RespValue::array(vec![
+                    RespValue::Integer(*ai_start as i64),
+                    RespValue::Integer(*ai_end as i64),
+                ]),
+                RespValue::array(vec![
+                    RespValue::Integer(*bj_start as i64),
+                    RespValue::Integer(*bj_end as i64),
+                ]),
             ];
             if with_match_len {
                 result_matches.push(RespValue::array(vec![
-                    pair[0].clone(), pair[1].clone(), RespValue::Integer(*match_len as i64),
+                    pair[0].clone(),
+                    pair[1].clone(),
+                    RespValue::Integer(*match_len as i64),
                 ]));
             } else {
                 result_matches.push(RespValue::array(pair));

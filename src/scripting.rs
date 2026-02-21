@@ -23,6 +23,12 @@ pub struct ScriptCache {
     scripts: Arc<Mutex<HashMap<String, String>>>,
 }
 
+impl Default for ScriptCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScriptCache {
     pub fn new() -> Self {
         ScriptCache {
@@ -119,17 +125,13 @@ fn lua_to_resp(val: LuaValue) -> RespValue {
         LuaValue::Boolean(false) | LuaValue::Nil => RespValue::null_bulk_string(),
         LuaValue::Table(t) => {
             // Check for status tables: { ok = ... } or { err = ... }
-            if let Ok(ok_val) = t.get::<LuaValue>("ok") {
-                if let LuaValue::String(s) = ok_val {
-                    let text = String::from_utf8_lossy(&s.as_bytes()).to_string();
-                    return RespValue::SimpleString(text);
-                }
+            if let Ok(LuaValue::String(s)) = t.get::<LuaValue>("ok") {
+                let text = String::from_utf8_lossy(&s.as_bytes()).to_string();
+                return RespValue::SimpleString(text);
             }
-            if let Ok(err_val) = t.get::<LuaValue>("err") {
-                if let LuaValue::String(s) = err_val {
-                    let text = String::from_utf8_lossy(&s.as_bytes()).to_string();
-                    return RespValue::Error(text);
-                }
+            if let Ok(LuaValue::String(s)) = t.get::<LuaValue>("err") {
+                let text = String::from_utf8_lossy(&s.as_bytes()).to_string();
+                return RespValue::Error(text);
             }
             // Otherwise treat as an array table (1-indexed)
             let len = t.raw_len();
@@ -236,7 +238,7 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
         }
 
         "MSET" => {
-            if cmd_args.len() < 2 || cmd_args.len() % 2 != 0 {
+            if cmd_args.len() < 2 || !cmd_args.len().is_multiple_of(2) {
                 return RespValue::error("ERR wrong number of arguments for 'mset' command");
             }
             let db = store.db(db_index);
@@ -384,8 +386,7 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
                         let db = store.db(db_index);
                         return RespValue::integer(if db.del(cmd_args[0]) { 1 } else { 0 });
                     }
-                    let expires_at =
-                        crate::store::entry::now_millis() + (seconds as u64) * 1000;
+                    let expires_at = crate::store::entry::now_millis() + (seconds as u64) * 1000;
                     let db = store.db(db_index);
                     RespValue::integer(if db.set_expiry(cmd_args[0], expires_at) {
                         1
@@ -423,13 +424,13 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             }
             let db = store.db(db_index);
             let keys = db.keys(cmd_args[0]);
-            let items: Vec<RespValue> = keys.into_iter().map(|k| RespValue::bulk_string(k)).collect();
+            let items: Vec<RespValue> = keys.into_iter().map(RespValue::bulk_string).collect();
             RespValue::array(items)
         }
 
         // -- Hashes ----------------------------------------------------------
         "HSET" => {
-            if cmd_args.len() < 3 || (cmd_args.len() - 1) % 2 != 0 {
+            if cmd_args.len() < 3 || !(cmd_args.len() - 1).is_multiple_of(2) {
                 return RespValue::error("ERR wrong number of arguments for 'hset' command");
             }
             let key = cmd_args[0];
@@ -607,8 +608,10 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             match db.get(cmd_args[0]) {
                 Some(entry) => match &entry.value {
                     crate::types::RedisValue::Hash(h) => {
-                        let items: Vec<RespValue> =
-                            h.iter().map(|(_, v)| RespValue::bulk_string(v.clone())).collect();
+                        let items: Vec<RespValue> = h
+                            .iter()
+                            .map(|(_, v)| RespValue::bulk_string(v.clone()))
+                            .collect();
                         RespValue::array(items)
                     }
                     _ => RespValue::error(
@@ -647,23 +650,21 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             }
             let start = match cmd_args[1].parse::<i64>() {
                 Ok(n) => n,
-                Err(_) => {
-                    return RespValue::error("ERR value is not an integer or out of range")
-                }
+                Err(_) => return RespValue::error("ERR value is not an integer or out of range"),
             };
             let stop = match cmd_args[2].parse::<i64>() {
                 Ok(n) => n,
-                Err(_) => {
-                    return RespValue::error("ERR value is not an integer or out of range")
-                }
+                Err(_) => return RespValue::error("ERR value is not an integer or out of range"),
             };
             let db = store.db(db_index);
             match db.get(cmd_args[0]) {
                 Some(entry) => match &entry.value {
                     crate::types::RedisValue::List(l) => {
                         let items = l.lrange(start, stop);
-                        let resp: Vec<RespValue> =
-                            items.into_iter().map(|v| RespValue::bulk_string(v.clone())).collect();
+                        let resp: Vec<RespValue> = items
+                            .into_iter()
+                            .map(|v| RespValue::bulk_string(v.clone()))
+                            .collect();
                         RespValue::array(resp)
                     }
                     _ => RespValue::error(
@@ -680,9 +681,7 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             }
             let index = match cmd_args[1].parse::<i64>() {
                 Ok(n) => n,
-                Err(_) => {
-                    return RespValue::error("ERR value is not an integer or out of range")
-                }
+                Err(_) => return RespValue::error("ERR value is not an integer or out of range"),
             };
             let db = store.db(db_index);
             match db.get(cmd_args[0]) {
@@ -753,7 +752,11 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             match db.get(cmd_args[0]) {
                 Some(entry) => match &entry.value {
                     crate::types::RedisValue::Set(s) => {
-                        RespValue::integer(if s.contains(cmd_args[1].as_bytes()) { 1 } else { 0 })
+                        RespValue::integer(if s.contains(cmd_args[1].as_bytes()) {
+                            1
+                        } else {
+                            0
+                        })
                     }
                     _ => RespValue::error(
                         "WRONGTYPE Operation against a key holding the wrong kind of value",
@@ -805,7 +808,7 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
         // -- Sorted Sets (basic) ---------------------------------------------
         "ZADD" => {
             // ZADD key score member [score member ...]
-            if cmd_args.len() < 3 || (cmd_args.len() - 1) % 2 != 0 {
+            if cmd_args.len() < 3 || !(cmd_args.len() - 1).is_multiple_of(2) {
                 return RespValue::error("ERR wrong number of arguments for 'zadd' command");
             }
             let key = cmd_args[0];
@@ -835,7 +838,8 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             let db = store.db(db_index);
             match db.get(cmd_args[0]) {
                 Some(entry) => match &entry.value {
-                    crate::types::RedisValue::SortedSet(z) => match z.score(cmd_args[1].as_bytes()) {
+                    crate::types::RedisValue::SortedSet(z) => match z.score(cmd_args[1].as_bytes())
+                    {
                         Some(s) => RespValue::bulk_string(format!("{s}")),
                         None => RespValue::null_bulk_string(),
                     },
@@ -895,10 +899,12 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             let db = store.db(db_index);
             match db.get(cmd_args[0]) {
                 Some(entry) => match &entry.value {
-                    crate::types::RedisValue::SortedSet(z) => match z.rank(cmd_args[1].as_bytes()) {
-                        Some(r) => RespValue::integer(r as i64),
-                        None => RespValue::null_bulk_string(),
-                    },
+                    crate::types::RedisValue::SortedSet(z) => {
+                        match z.rank(cmd_args[1].as_bytes()) {
+                            Some(r) => RespValue::integer(r as i64),
+                            None => RespValue::null_bulk_string(),
+                        }
+                    }
                     _ => RespValue::error(
                         "WRONGTYPE Operation against a key holding the wrong kind of value",
                     ),
@@ -946,16 +952,35 @@ fn execute_redis_command(store: &mut DataStore, db_index: usize, args: &[String]
             let mut i = 1;
             while i < cmd_args.len() {
                 match cmd_args[i].to_uppercase().as_str() {
-                    "MATCH" => { i += 1; if i < cmd_args.len() { pattern = Some(cmd_args[i].to_string()); } }
-                    "COUNT" => { i += 1; if i < cmd_args.len() { count = cmd_args[i].parse().unwrap_or(10); } }
-                    "TYPE" => { i += 1; if i < cmd_args.len() { type_filter = Some(cmd_args[i].to_string()); } }
+                    "MATCH" => {
+                        i += 1;
+                        if i < cmd_args.len() {
+                            pattern = Some(cmd_args[i].to_string());
+                        }
+                    }
+                    "COUNT" => {
+                        i += 1;
+                        if i < cmd_args.len() {
+                            count = cmd_args[i].parse().unwrap_or(10);
+                        }
+                    }
+                    "TYPE" => {
+                        i += 1;
+                        if i < cmd_args.len() {
+                            type_filter = Some(cmd_args[i].to_string());
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
             }
             let db = store.db(db_index);
-            let (next_cursor, keys) = db.scan_with_type(cursor, pattern.as_deref(), count, type_filter.as_deref());
-            let key_values: Vec<RespValue> = keys.into_iter().map(|k| RespValue::bulk_string(k.into_bytes())).collect();
+            let (next_cursor, keys) =
+                db.scan_with_type(cursor, pattern.as_deref(), count, type_filter.as_deref());
+            let key_values: Vec<RespValue> = keys
+                .into_iter()
+                .map(|k| RespValue::bulk_string(k.into_bytes()))
+                .collect();
             RespValue::array(vec![
                 RespValue::bulk_string(next_cursor.to_string().into_bytes()),
                 RespValue::array(key_values),
@@ -1171,9 +1196,7 @@ pub fn eval_script(
     store: &mut DataStore,
     db_index: usize,
 ) -> RespValue {
-    let lua = match Lua::new() {
-        lua => lua,
-    };
+    let lua = Lua::new();
 
     // We pass a raw pointer to the DataStore into the Lua closures.
     // SAFETY: the pointer is valid for the entire duration of `lua.load(...).call()`,
@@ -1193,7 +1216,8 @@ pub fn eval_script(
         Err(e) => {
             let msg = e.to_string();
             // If the error message already starts with a Redis-like prefix, keep it
-            if msg.starts_with("ERR") || msg.starts_with("WRONGTYPE") || msg.starts_with("NOSCRIPT") {
+            if msg.starts_with("ERR") || msg.starts_with("WRONGTYPE") || msg.starts_with("NOSCRIPT")
+            {
                 RespValue::error(msg)
             } else {
                 RespValue::error(format!("ERR {msg}"))
@@ -1264,9 +1288,8 @@ fn setup_globals(
     })?;
 
     // redis.log() — no-op for now (just discards output)
-    let redis_log = lua.create_function(|_lua, _args: LuaMultiValue| -> LuaResult<()> {
-        Ok(())
-    })?;
+    let redis_log =
+        lua.create_function(|_lua, _args: LuaMultiValue| -> LuaResult<()> { Ok(()) })?;
 
     // Build the `redis` table
     let redis_table = lua.create_table()?;
@@ -1306,7 +1329,8 @@ fn lua_args_to_strings(args: &LuaMultiValue) -> LuaResult<Vec<String>> {
             }
             _ => {
                 return Err(LuaError::RuntimeError(
-                    "ERR Lua redis.call() accepts only strings and numbers as arguments".to_string(),
+                    "ERR Lua redis.call() accepts only strings and numbers as arguments"
+                        .to_string(),
                 ));
             }
         }

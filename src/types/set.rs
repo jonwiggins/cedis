@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 /// Redis set type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RedisSet {
     data: HashSet<Vec<u8>>,
     /// Once a non-integer member is added, the set can never go back to intset encoding.
@@ -125,7 +125,10 @@ impl RedisSet {
                 .and_then(|s| s.parse::<i64>().ok())
                 .is_none()
         });
-        RedisSet { data, was_non_intset }
+        RedisSet {
+            data,
+            was_non_intset,
+        }
     }
 
     pub fn into_inner(self) -> HashSet<Vec<u8>> {
@@ -139,11 +142,12 @@ impl RedisSet {
 
     /// Check if all members are integers and the set was never promoted from intset.
     pub fn is_all_integers(&self) -> bool {
-        !self.was_non_intset && self.data.iter().all(|member| {
-            std::str::from_utf8(member)
-                .ok()
-                .and_then(|s| s.parse::<i64>().ok())
-                .is_some()
-        })
+        !self.was_non_intset
+            && self.data.iter().all(|member| {
+                std::str::from_utf8(member)
+                    .ok()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .is_some()
+            })
     }
 }

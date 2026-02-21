@@ -11,6 +11,12 @@ pub struct KeyWatcher {
     waiters: HashMap<String, Vec<Arc<Notify>>>,
 }
 
+impl Default for KeyWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyWatcher {
     pub fn new() -> Self {
         KeyWatcher {

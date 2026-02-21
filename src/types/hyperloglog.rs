@@ -1,8 +1,8 @@
-/// HyperLogLog probabilistic cardinality estimator.
-///
-/// Uses 2^14 = 16384 registers, matching Redis's HLL implementation.
-/// Each register stores the maximum number of leading zeros + 1 observed
-/// for elements hashing to that register.
+// HyperLogLog probabilistic cardinality estimator.
+//
+// Uses 2^14 = 16384 registers, matching Redis's HLL implementation.
+// Each register stores the maximum number of leading zeros + 1 observed
+// for elements hashing to that register.
 
 const HLL_P: usize = 14; // Number of bits used for register index
 const HLL_REGISTERS: usize = 1 << HLL_P; // 16384
@@ -14,6 +14,12 @@ const HLL_ALPHA: f64 = 0.7213 / (1.0 + 1.079 / HLL_REGISTERS as f64);
 #[derive(Debug, Clone)]
 pub struct HyperLogLog {
     registers: Vec<u8>,
+}
+
+impl Default for HyperLogLog {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HyperLogLog {

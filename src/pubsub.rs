@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::glob::glob_match;
 use crate::resp::RespValue;
@@ -20,6 +20,12 @@ pub struct PubSubRegistry {
     client_channels: HashMap<u64, HashSet<String>>,
     /// client_id -> set of patterns subscribed
     client_patterns: HashMap<u64, HashSet<String>>,
+}
+
+impl Default for PubSubRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PubSubRegistry {
@@ -212,14 +218,8 @@ impl PubSubRegistry {
     }
 
     fn subscription_count(&self, client_id: u64) -> usize {
-        let chans = self
-            .client_channels
-            .get(&client_id)
-            .map_or(0, |s| s.len());
-        let pats = self
-            .client_patterns
-            .get(&client_id)
-            .map_or(0, |s| s.len());
+        let chans = self.client_channels.get(&client_id).map_or(0, |s| s.len());
+        let pats = self.client_patterns.get(&client_id).map_or(0, |s| s.len());
         chans + pats
     }
 }

@@ -18,6 +18,12 @@ pub struct Database {
     pub lazy_expired_count: u64,
 }
 
+impl Default for Database {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Database {
     pub fn new() -> Self {
         Database {
@@ -113,9 +119,7 @@ impl Database {
         let now = now_millis();
         self.data
             .iter()
-            .filter(|(_, entry)| {
-                !entry.expires_at.is_some_and(|exp| now >= exp)
-            })
+            .filter(|(_, entry)| entry.expires_at.is_none_or(|exp| now < exp))
             .filter(|(key, _)| glob_match(pattern, key))
             .map(|(key, _)| key.clone())
             .collect()
@@ -123,22 +127,35 @@ impl Database {
 
     /// Scan with cursor-based iteration.
     /// Returns (next_cursor, keys).
-    pub fn scan(&mut self, cursor: usize, pattern: Option<&str>, count: usize) -> (usize, Vec<String>) {
+    pub fn scan(
+        &mut self,
+        cursor: usize,
+        pattern: Option<&str>,
+        count: usize,
+    ) -> (usize, Vec<String>) {
         self.scan_with_type(cursor, pattern, count, None)
     }
 
     /// Scan with cursor-based iteration and optional type filter.
     /// Lazily expires keys that match the pattern and are expired.
-    pub fn scan_with_type(&mut self, cursor: usize, pattern: Option<&str>, count: usize, type_filter: Option<&str>) -> (usize, Vec<String>) {
+    pub fn scan_with_type(
+        &mut self,
+        cursor: usize,
+        pattern: Option<&str>,
+        count: usize,
+        type_filter: Option<&str>,
+    ) -> (usize, Vec<String>) {
         let now = now_millis();
 
         // Lazily delete expired keys that match the scan pattern
         // Do this BEFORE building the cursor list for stability
         {
-            let expired_matches: Vec<String> = self.data.iter()
+            let expired_matches: Vec<String> = self
+                .data
+                .iter()
                 .filter(|(key, entry)| {
                     entry.expires_at.is_some_and(|exp| now >= exp)
-                        && pattern.map_or(true, |pat| glob_match(pat, key))
+                        && pattern.is_none_or(|pat| glob_match(pat, key))
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
@@ -151,9 +168,7 @@ impl Database {
         let mut all_keys: Vec<&String> = self
             .data
             .iter()
-            .filter(|(_, entry)| {
-                !entry.expires_at.is_some_and(|exp| now >= exp)
-            })
+            .filter(|(_, entry)| entry.expires_at.is_none_or(|exp| now < exp))
             .map(|(key, _)| key)
             .collect();
         all_keys.sort();
@@ -169,9 +184,11 @@ impl Database {
 
         while i < total && scanned < count {
             let key = all_keys[i];
-            let matches_pattern = pattern.map_or(true, |p| glob_match(p, key));
-            let matches_type = type_filter.map_or(true, |t| {
-                self.data.get(key).map_or(false, |entry| entry.value.type_name().eq_ignore_ascii_case(t))
+            let matches_pattern = pattern.is_none_or(|p| glob_match(p, key));
+            let matches_type = type_filter.is_none_or(|t| {
+                self.data
+                    .get(key)
+                    .is_some_and(|entry| entry.value.type_name().eq_ignore_ascii_case(t))
             });
             if matches_pattern && matches_type {
                 results.push(key.clone());
@@ -201,11 +218,11 @@ impl Database {
 
     /// Remove expiry from a key. Returns true if the key had an expiry.
     pub fn persist(&mut self, key: &str) -> bool {
-        if let Some(entry) = self.data.get_mut(key) {
-            if entry.expires_at.is_some() {
-                entry.expires_at = None;
-                return true;
-            }
+        if let Some(entry) = self.data.get_mut(key)
+            && entry.expires_at.is_some()
+        {
+            entry.expires_at = None;
+            return true;
         }
         false
     }
@@ -246,9 +263,7 @@ impl Database {
         let now = now_millis();
         self.data
             .iter()
-            .filter(|(_, entry)| {
-                !entry.expires_at.is_some_and(|exp| now >= exp)
-            })
+            .filter(|(_, entry)| entry.expires_at.is_none_or(|exp| now < exp))
             .map(|(key, _)| key.clone())
             .choose(&mut rng)
     }
@@ -264,9 +279,7 @@ impl Database {
     }
 
     fn is_expired(&self, key: &str) -> bool {
-        self.data
-            .get(key)
-            .is_some_and(|entry| entry.is_expired())
+        self.data.get(key).is_some_and(|entry| entry.is_expired())
     }
 
     /// Get keys with expiry info for persistence
@@ -317,9 +330,7 @@ impl Database {
                     // HyperLogLog uses a fixed 12KB register set
                     12304
                 }
-                RedisValue::Geo(g) => {
-                    g.estimated_memory()
-                }
+                RedisValue::Geo(g) => g.estimated_memory(),
             };
         }
         total
@@ -390,7 +401,12 @@ impl DataStore {
         for _ in 0..num_databases {
             databases.push(Database::new());
         }
-        DataStore { databases, dirty: 0, expired_keys: 0, expired_keys_active: 0 }
+        DataStore {
+            databases,
+            dirty: 0,
+            expired_keys: 0,
+            expired_keys_active: 0,
+        }
     }
 
     pub fn db(&mut self, index: usize) -> &mut Database {

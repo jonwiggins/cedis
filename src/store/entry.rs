@@ -53,11 +53,7 @@ impl Entry {
             None => -1,
             Some(exp) => {
                 let now = now_millis();
-                if now >= exp {
-                    -2
-                } else {
-                    (exp - now) as i64
-                }
+                if now >= exp { -2 } else { (exp - now) as i64 }
             }
         }
     }

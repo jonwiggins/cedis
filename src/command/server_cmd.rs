@@ -78,8 +78,12 @@ pub async fn cmd_auth(
             client.authenticated = true;
             RespValue::ok()
         }
-        Some(_) => RespValue::error("WRONGPASS invalid username-password pair or user is disabled."),
-        None => RespValue::error("ERR Client sent AUTH, but no password is set. Did you mean ACL SETUSER with >password?"),
+        Some(_) => {
+            RespValue::error("WRONGPASS invalid username-password pair or user is disabled.")
+        }
+        None => RespValue::error(
+            "ERR Client sent AUTH, but no password is set. Did you mean ACL SETUSER with >password?",
+        ),
     }
 }
 
@@ -132,16 +136,13 @@ pub async fn cmd_swapdb(
     }
 }
 
-pub async fn cmd_info(
-    args: &[RespValue],
-    store: &SharedStore,
-    config: &SharedConfig,
-) -> RespValue {
+pub async fn cmd_info(args: &[RespValue], store: &SharedStore, config: &SharedConfig) -> RespValue {
     let cfg = config.read().await;
     let mut store = store.write().await;
 
     // Determine which section(s) to include
-    let section_filter: Option<String> = args.first()
+    let section_filter: Option<String> = args
+        .first()
         .and_then(|a| a.to_string_lossy())
         .map(|s| s.to_lowercase());
 
@@ -150,7 +151,9 @@ pub async fn cmd_info(
         || section_filter.as_deref() == Some("everything");
 
     let show_section = |name: &str| -> bool {
-        show_all || section_filter.as_deref() == Some(name) || section_filter.as_deref() == Some("default")
+        show_all
+            || section_filter.as_deref() == Some(name)
+            || section_filter.as_deref() == Some("default")
     };
 
     let mut info = String::new();
@@ -228,7 +231,14 @@ pub async fn cmd_info(
         info.push_str("used_memory_scripts:0\r\n");
         info.push_str("number_of_cached_scripts:0\r\n");
         info.push_str(&format!("maxmemory:{}\r\n", cfg.maxmemory));
-        info.push_str(&format!("maxmemory_human:{}\r\n", if cfg.maxmemory == 0 { "0B".to_string() } else { format!("{}B", cfg.maxmemory) }));
+        info.push_str(&format!(
+            "maxmemory_human:{}\r\n",
+            if cfg.maxmemory == 0 {
+                "0B".to_string()
+            } else {
+                format!("{}B", cfg.maxmemory)
+            }
+        ));
         info.push_str(&format!("maxmemory_policy:{}\r\n", cfg.maxmemory_policy));
         info.push_str("allocator_frag_ratio:1.0\r\n");
         info.push_str("allocator_frag_bytes:0\r\n");
@@ -265,8 +275,8 @@ pub async fn cmd_info(
         info.push_str("sync_partial_err:0\r\n");
         store.drain_lazy_expired();
         info.push_str(&format!("expired_keys:{}\r\n", store.expired_keys));
-        info.push_str(&format!("expired_stale_perc:0.00\r\n"));
-        info.push_str(&format!("expired_time_cap_reached_count:0\r\n"));
+        info.push_str("expired_stale_perc:0.00\r\n");
+        info.push_str("expired_time_cap_reached_count:0\r\n");
         info.push_str("expire_cycle_cpu_milliseconds:0\r\n");
         info.push_str("evicted_keys:0\r\n");
         info.push_str("evicted_clients:0\r\n");
@@ -301,7 +311,7 @@ pub async fn cmd_info(
     if show_section("persistence") {
         info.push_str("# Persistence\r\n");
         info.push_str("loading:0\r\n");
-        info.push_str(&format!("async_loading:0\r\n"));
+        info.push_str("async_loading:0\r\n");
         info.push_str("current_cow_peak:0\r\n");
         info.push_str("current_cow_size:0\r\n");
         info.push_str("current_cow_size_age:0\r\n");
@@ -316,7 +326,10 @@ pub async fn cmd_info(
         info.push_str("rdb_current_bgsave_time_sec:-1\r\n");
         info.push_str("rdb_saves:0\r\n");
         info.push_str("rdb_last_cow_size:0\r\n");
-        info.push_str(&format!("aof_enabled:{}\r\n", if cfg.appendonly { 1 } else { 0 }));
+        info.push_str(&format!(
+            "aof_enabled:{}\r\n",
+            if cfg.appendonly { 1 } else { 0 }
+        ));
         info.push_str("aof_rewrite_in_progress:0\r\n");
         info.push_str("aof_rewrite_scheduled:0\r\n");
         info.push_str("aof_last_rewrite_time_sec:-1\r\n");
@@ -378,7 +391,9 @@ pub async fn cmd_info(
             let size = db.dbsize();
             if size > 0 {
                 let expires = db.expires_count();
-                info.push_str(&format!("db{i}:keys={size},expires={expires},avg_ttl=0\r\n"));
+                info.push_str(&format!(
+                    "db{i}:keys={size},expires={expires},avg_ttl=0\r\n"
+                ));
             }
         }
     }
@@ -386,7 +401,11 @@ pub async fn cmd_info(
     RespValue::bulk_string(info.into_bytes())
 }
 
-pub async fn cmd_config(args: &[RespValue], config: &SharedConfig, store: &SharedStore) -> RespValue {
+pub async fn cmd_config(
+    args: &[RespValue],
+    config: &SharedConfig,
+    store: &SharedStore,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("config");
     }
@@ -408,39 +427,57 @@ pub async fn cmd_config(args: &[RespValue], config: &SharedConfig, store: &Share
 
             let cfg = config.read().await;
             let params = [
-                "bind", "port", "databases", "requirepass", "timeout",
-                "tcp-keepalive", "hz", "loglevel", "dbfilename", "dir",
-                "appendonly", "appendfsync", "maxmemory", "maxmemory-policy",
+                "bind",
+                "port",
+                "databases",
+                "requirepass",
+                "timeout",
+                "tcp-keepalive",
+                "hz",
+                "loglevel",
+                "dbfilename",
+                "dir",
+                "appendonly",
+                "appendfsync",
+                "maxmemory",
+                "maxmemory-policy",
                 "save",
-                "list-max-listpack-size", "list-max-ziplist-size",
-                "hash-max-listpack-entries", "hash-max-ziplist-entries",
-                "hash-max-listpack-value", "hash-max-ziplist-value",
-                "set-max-intset-entries", "set-max-listpack-entries",
-                "set-max-listpack-value", "list-compress-depth",
-                "zset-max-listpack-entries", "zset-max-ziplist-entries",
-                "zset-max-listpack-value", "zset-max-ziplist-value",
+                "list-max-listpack-size",
+                "list-max-ziplist-size",
+                "hash-max-listpack-entries",
+                "hash-max-ziplist-entries",
+                "hash-max-listpack-value",
+                "hash-max-ziplist-value",
+                "set-max-intset-entries",
+                "set-max-listpack-entries",
+                "set-max-listpack-value",
+                "list-compress-depth",
+                "zset-max-listpack-entries",
+                "zset-max-ziplist-entries",
+                "zset-max-listpack-value",
+                "zset-max-ziplist-value",
             ];
 
             let mut result = Vec::new();
             // Use a set to avoid duplicate entries for aliased params
             let mut seen = std::collections::HashSet::new();
             for param in &params {
-                if crate::glob::glob_match(&pattern, param) {
-                    if let Some(val) = cfg.get(param) {
-                        // For aliased params, use the canonical name (the one that matched)
-                        // but avoid duplicates
-                        let canonical = match *param {
-                            "list-max-ziplist-size" => "list-max-listpack-size",
-                            "hash-max-ziplist-entries" => "hash-max-listpack-entries",
-                            "hash-max-ziplist-value" => "hash-max-listpack-value",
-                            "zset-max-ziplist-entries" => "zset-max-listpack-entries",
-                            "zset-max-ziplist-value" => "zset-max-listpack-value",
-                            other => other,
-                        };
-                        if seen.insert(canonical) {
-                            result.push(RespValue::bulk_string(param.as_bytes().to_vec()));
-                            result.push(RespValue::bulk_string(val.into_bytes()));
-                        }
+                if crate::glob::glob_match(&pattern, param)
+                    && let Some(val) = cfg.get(param)
+                {
+                    // For aliased params, use the canonical name (the one that matched)
+                    // but avoid duplicates
+                    let canonical = match *param {
+                        "list-max-ziplist-size" => "list-max-listpack-size",
+                        "hash-max-ziplist-entries" => "hash-max-listpack-entries",
+                        "hash-max-ziplist-value" => "hash-max-listpack-value",
+                        "zset-max-ziplist-entries" => "zset-max-listpack-entries",
+                        "zset-max-ziplist-value" => "zset-max-listpack-value",
+                        other => other,
+                    };
+                    if seen.insert(canonical) {
+                        result.push(RespValue::bulk_string(param.as_bytes().to_vec()));
+                        result.push(RespValue::bulk_string(val.into_bytes()));
                     }
                 }
             }
@@ -494,8 +531,16 @@ pub fn cmd_time() -> RespValue {
 
 /// Build a COMMAND INFO entry for a single command.
 /// Format: [name, arity, [flags...], first_key, last_key, step]
-fn command_info_entry(name: &str, arity: i64, flags: &[&str], first_key: i64, last_key: i64, step: i64) -> RespValue {
-    let flag_arr: Vec<RespValue> = flags.iter()
+fn command_info_entry(
+    name: &str,
+    arity: i64,
+    flags: &[&str],
+    first_key: i64,
+    last_key: i64,
+    step: i64,
+) -> RespValue {
+    let flag_arr: Vec<RespValue> = flags
+        .iter()
         .map(|f| RespValue::SimpleString(f.to_string()))
         .collect();
     RespValue::array(vec![
@@ -660,33 +705,160 @@ fn get_command_info(name: &str) -> Option<RespValue> {
         "reset" => (1, vec!["fast", "stale", "no-auth"], 0, 0, 0),
         _ => return None,
     };
-    Some(command_info_entry(name, info.0, &info.1, info.2, info.3, info.4))
+    Some(command_info_entry(
+        name, info.0, &info.1, info.2, info.3, info.4,
+    ))
 }
 
 /// Collect all known command names for COMMAND LIST.
 fn all_command_names() -> Vec<&'static str> {
     vec![
-        "get", "set", "del", "mget", "mset", "incr", "decr", "incrby", "decrby",
-        "incrbyfloat", "append", "strlen", "exists", "expire", "pexpire", "expireat",
-        "pexpireat", "ttl", "pttl", "persist", "type", "rename", "renamenx", "keys",
-        "scan", "ping", "echo", "quit", "select", "auth", "dbsize", "flushdb",
-        "flushall", "info", "config", "time", "command", "client", "lpush", "rpush",
-        "lpop", "rpop", "llen", "lrange", "lindex", "lset", "linsert", "lrem",
-        "ltrim", "blpop", "brpop", "hset", "hget", "hdel", "hgetall", "hlen",
-        "hexists", "hkeys", "hvals", "hmset", "hmget", "hincrby", "hincrbyfloat",
-        "sadd", "srem", "sismember", "smembers", "scard", "spop", "srandmember",
-        "sunion", "sinter", "sdiff", "sunionstore", "sinterstore", "sdiffstore",
-        "zadd", "zrem", "zscore", "zrank", "zrevrank", "zcard", "zcount", "zrange",
-        "zrevrange", "zincrby", "multi", "exec", "discard", "watch", "unwatch",
-        "subscribe", "unsubscribe", "publish", "psubscribe", "punsubscribe",
-        "save", "bgsave", "eval", "evalsha", "wait", "object", "debug", "sort",
-        "dump", "restore", "copy", "move", "randomkey", "setnx", "setex", "psetex",
-        "getset", "getdel", "getex", "getrange", "setrange", "msetnx", "unlink",
-        "lmove", "blmove", "rpoplpush", "lpos", "lmpop", "blmpop",
-        "setbit", "getbit", "bitcount", "bitop", "bitpos",
-        "pfadd", "pfcount", "pfmerge", "geoadd", "geodist", "geopos", "geohash",
-        "geosearch", "xadd", "xlen", "xrange", "xrevrange", "xread",
-        "swapdb", "hello", "reset",
+        "get",
+        "set",
+        "del",
+        "mget",
+        "mset",
+        "incr",
+        "decr",
+        "incrby",
+        "decrby",
+        "incrbyfloat",
+        "append",
+        "strlen",
+        "exists",
+        "expire",
+        "pexpire",
+        "expireat",
+        "pexpireat",
+        "ttl",
+        "pttl",
+        "persist",
+        "type",
+        "rename",
+        "renamenx",
+        "keys",
+        "scan",
+        "ping",
+        "echo",
+        "quit",
+        "select",
+        "auth",
+        "dbsize",
+        "flushdb",
+        "flushall",
+        "info",
+        "config",
+        "time",
+        "command",
+        "client",
+        "lpush",
+        "rpush",
+        "lpop",
+        "rpop",
+        "llen",
+        "lrange",
+        "lindex",
+        "lset",
+        "linsert",
+        "lrem",
+        "ltrim",
+        "blpop",
+        "brpop",
+        "hset",
+        "hget",
+        "hdel",
+        "hgetall",
+        "hlen",
+        "hexists",
+        "hkeys",
+        "hvals",
+        "hmset",
+        "hmget",
+        "hincrby",
+        "hincrbyfloat",
+        "sadd",
+        "srem",
+        "sismember",
+        "smembers",
+        "scard",
+        "spop",
+        "srandmember",
+        "sunion",
+        "sinter",
+        "sdiff",
+        "sunionstore",
+        "sinterstore",
+        "sdiffstore",
+        "zadd",
+        "zrem",
+        "zscore",
+        "zrank",
+        "zrevrank",
+        "zcard",
+        "zcount",
+        "zrange",
+        "zrevrange",
+        "zincrby",
+        "multi",
+        "exec",
+        "discard",
+        "watch",
+        "unwatch",
+        "subscribe",
+        "unsubscribe",
+        "publish",
+        "psubscribe",
+        "punsubscribe",
+        "save",
+        "bgsave",
+        "eval",
+        "evalsha",
+        "wait",
+        "object",
+        "debug",
+        "sort",
+        "dump",
+        "restore",
+        "copy",
+        "move",
+        "randomkey",
+        "setnx",
+        "setex",
+        "psetex",
+        "getset",
+        "getdel",
+        "getex",
+        "getrange",
+        "setrange",
+        "msetnx",
+        "unlink",
+        "lmove",
+        "blmove",
+        "rpoplpush",
+        "lpos",
+        "lmpop",
+        "blmpop",
+        "setbit",
+        "getbit",
+        "bitcount",
+        "bitop",
+        "bitpos",
+        "pfadd",
+        "pfcount",
+        "pfmerge",
+        "geoadd",
+        "geodist",
+        "geopos",
+        "geohash",
+        "geosearch",
+        "xadd",
+        "xlen",
+        "xrange",
+        "xrevrange",
+        "xread",
+        "swapdb",
+        "hello",
+        "reset",
     ]
 }
 
@@ -767,30 +939,46 @@ pub fn cmd_client(args: &[RespValue], client: &mut ClientState) -> RespValue {
         },
         "ID" => RespValue::integer(client.id as i64),
         "LIST" => {
-            let flags = if client.in_multi { "x" }
-                else if client.in_monitor { "O" }
-                else { "N" };
+            let flags = if client.in_multi {
+                "x"
+            } else if client.in_monitor {
+                "O"
+            } else {
+                "N"
+            };
             let info = format!(
                 "id={} addr=127.0.0.1:0 laddr=127.0.0.1:6379 fd=0 name={} db={} sub=0 psub=0 multi={} watch={} qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags={} events=r cmd=client user=default lib-name= lib-ver=\n",
                 client.id,
                 client.name.as_deref().unwrap_or(""),
                 client.db_index,
-                if client.in_multi { client.multi_queue.len() as i64 } else { -1 },
+                if client.in_multi {
+                    client.multi_queue.len() as i64
+                } else {
+                    -1
+                },
                 client.watched_keys.len(),
                 flags,
             );
             RespValue::bulk_string(info.into_bytes())
         }
         "INFO" => {
-            let flags = if client.in_multi { "x" }
-                else if client.in_monitor { "O" }
-                else { "N" };
+            let flags = if client.in_multi {
+                "x"
+            } else if client.in_monitor {
+                "O"
+            } else {
+                "N"
+            };
             let info = format!(
                 "id={} addr=127.0.0.1:0 laddr=127.0.0.1:6379 fd=0 name={} db={} sub=0 psub=0 multi={} watch={} qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags={} events=r cmd=client user=default lib-name= lib-ver=\n",
                 client.id,
                 client.name.as_deref().unwrap_or(""),
                 client.db_index,
-                if client.in_multi { client.multi_queue.len() as i64 } else { -1 },
+                if client.in_multi {
+                    client.multi_queue.len() as i64
+                } else {
+                    -1
+                },
                 client.watched_keys.len(),
                 flags,
             );
@@ -841,7 +1029,7 @@ pub async fn cmd_debug(
             RespValue::ok()
         }
         "SET-ACTIVE-EXPIRE" => {
-            if let Some(val) = args.get(1).and_then(|a| crate::command::arg_to_string(a)) {
+            if let Some(val) = args.get(1).and_then(crate::command::arg_to_string) {
                 let mut cfg = config.write().await;
                 cfg.active_expire_enabled = val != "0";
             }
@@ -876,7 +1064,9 @@ pub async fn cmd_debug(
             RespValue::ok()
         }
         "JMAP" | "QUICKLIST-PACKED-THRESHOLD" => RespValue::ok(),
-        "DIGEST-VALUE" | "DIGEST" => RespValue::bulk_string(b"0000000000000000000000000000000000000000".to_vec()),
+        "DIGEST-VALUE" | "DIGEST" => {
+            RespValue::bulk_string(b"0000000000000000000000000000000000000000".to_vec())
+        }
         "OBJECT" => {
             // DEBUG OBJECT key - return encoding and type info
             if args.len() < 2 {
@@ -893,31 +1083,58 @@ pub async fn cmd_debug(
                     let type_name = entry.value.type_name();
                     let encoding = match &entry.value {
                         crate::types::RedisValue::String(s) => {
-                            if s.as_i64().is_some() { "int" }
-                            else if s.len() <= 44 { "embstr" }
-                            else { "raw" }
+                            if s.as_i64().is_some() {
+                                "int"
+                            } else if s.len() <= 44 {
+                                "embstr"
+                            } else {
+                                "raw"
+                            }
                         }
                         crate::types::RedisValue::List(l) => {
                             let cfg = config.read().await;
                             if cfg.list_max_listpack_size > 0 {
-                                if l.len() <= cfg.list_max_listpack_size as usize { "listpack" } else { "quicklist" }
+                                if l.len() <= cfg.list_max_listpack_size as usize {
+                                    "listpack"
+                                } else {
+                                    "quicklist"
+                                }
                             } else {
                                 "quicklist"
                             }
                         }
                         crate::types::RedisValue::Hash(h) => {
                             let cfg = config.read().await;
-                            if h.len() <= cfg.hash_max_listpack_entries as usize && !h.has_long_entry(cfg.hash_max_listpack_value as usize) { "listpack" } else { "hashtable" }
+                            if h.len() <= cfg.hash_max_listpack_entries as usize
+                                && !h.has_long_entry(cfg.hash_max_listpack_value as usize)
+                            {
+                                "listpack"
+                            } else {
+                                "hashtable"
+                            }
                         }
                         crate::types::RedisValue::Set(s) => {
                             let cfg = config.read().await;
-                            if s.is_all_integers() && s.len() <= cfg.set_max_intset_entries as usize { "intset" }
-                            else if s.len() <= cfg.set_max_listpack_entries as usize && !s.has_long_entry(cfg.set_max_listpack_value as usize) { "listpack" }
-                            else { "hashtable" }
+                            if s.is_all_integers() && s.len() <= cfg.set_max_intset_entries as usize
+                            {
+                                "intset"
+                            } else if s.len() <= cfg.set_max_listpack_entries as usize
+                                && !s.has_long_entry(cfg.set_max_listpack_value as usize)
+                            {
+                                "listpack"
+                            } else {
+                                "hashtable"
+                            }
                         }
                         crate::types::RedisValue::SortedSet(z) => {
                             let cfg = config.read().await;
-                            if z.len() <= cfg.zset_max_listpack_entries as usize && !z.has_long_entry(cfg.zset_max_listpack_value as usize) { "listpack" } else { "skiplist" }
+                            if z.len() <= cfg.zset_max_listpack_entries as usize
+                                && !z.has_long_entry(cfg.zset_max_listpack_value as usize)
+                            {
+                                "listpack"
+                            } else {
+                                "skiplist"
+                            }
                         }
                         _ => "raw",
                     };
@@ -935,9 +1152,17 @@ pub async fn cmd_debug(
         "PROTOCOL" => {
             // Stub for DEBUG PROTOCOL - return expected values for common sub-args
             if args.len() >= 2 {
-                match arg_to_string(&args[1]).unwrap_or_default().to_uppercase().as_str() {
-                    "ATTRIB" => RespValue::bulk_string(b"Some real reply following the attribute".to_vec()),
-                    "BIGNUM" => RespValue::bulk_string(b"1234567999999999999999999999999999999".to_vec()),
+                match arg_to_string(&args[1])
+                    .unwrap_or_default()
+                    .to_uppercase()
+                    .as_str()
+                {
+                    "ATTRIB" => {
+                        RespValue::bulk_string(b"Some real reply following the attribute".to_vec())
+                    }
+                    "BIGNUM" => {
+                        RespValue::bulk_string(b"1234567999999999999999999999999999999".to_vec())
+                    }
                     "TRUE" => RespValue::Integer(1),
                     "FALSE" => RespValue::Integer(0),
                     "VERBATIM" => RespValue::bulk_string(b"This is a verbatim\nstring".to_vec()),

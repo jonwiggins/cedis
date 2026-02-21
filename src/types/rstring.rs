@@ -11,6 +11,7 @@ impl RedisString {
         RedisString { data }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         RedisString {
             data: s.as_bytes().to_vec(),
@@ -88,9 +89,15 @@ impl RedisString {
         let mut e = if end < 0 { len + end } else { end };
 
         // Clamp to valid range (Redis behavior)
-        if s < 0 { s = 0; }
-        if e < 0 { e = 0; }
-        if e >= len { e = len - 1; }
+        if s < 0 {
+            s = 0;
+        }
+        if e < 0 {
+            e = 0;
+        }
+        if e >= len {
+            e = len - 1;
+        }
 
         if s > e {
             return &[];

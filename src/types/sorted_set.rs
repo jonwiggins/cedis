@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 /// Redis sorted set — implemented using BTreeMap + HashMap.
 /// The BTreeMap provides ordered iteration by score,
 /// and the HashMap provides O(1) score lookup by member.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RedisSortedSet {
     /// member -> score
     scores: HashMap<Vec<u8>, f64>,
@@ -88,8 +88,7 @@ impl RedisSortedSet {
 
     pub fn remove(&mut self, member: &[u8]) -> bool {
         if let Some(score) = self.scores.remove(member) {
-            self.tree
-                .remove(&SortedSetKey::new(score, member.to_vec()));
+            self.tree.remove(&SortedSetKey::new(score, member.to_vec()));
             true
         } else {
             false
@@ -116,7 +115,9 @@ impl RedisSortedSet {
     /// Get members in ascending order by rank range.
     pub fn range(&self, start: i64, stop: i64) -> Vec<(&[u8], f64)> {
         let len = self.len() as i64;
-        if len == 0 { return vec![]; }
+        if len == 0 {
+            return vec![];
+        }
         // Normalize without clamping to detect out-of-range
         let s = if start < 0 { len + start } else { start };
         let e = if stop < 0 { len + stop } else { stop };
@@ -137,7 +138,9 @@ impl RedisSortedSet {
     /// Get members in descending order by rank range.
     pub fn rev_range(&self, start: i64, stop: i64) -> Vec<(&[u8], f64)> {
         let len = self.len() as i64;
-        if len == 0 { return vec![]; }
+        if len == 0 {
+            return vec![];
+        }
         let s = if start < 0 { len + start } else { start };
         let e = if stop < 0 { len + stop } else { stop };
         if s > e || s >= len || e < 0 {
@@ -157,7 +160,9 @@ impl RedisSortedSet {
 
     /// Get members with scores in [min, max].
     pub fn range_by_score(&self, min: f64, max: f64) -> Vec<(&[u8], f64)> {
-        if min > max { return vec![]; }
+        if min > max {
+            return vec![];
+        }
         let min_key = SortedSetKey::new(min, vec![]);
         let max_key = SortedSetKey::new(max, vec![0xff; 128]);
 
@@ -248,4 +253,3 @@ impl RedisSortedSet {
             .collect()
     }
 }
-

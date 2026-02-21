@@ -11,14 +11,16 @@ use std::time::Duration;
 /// Parse a blocking timeout argument (supports both integer and float values).
 /// Returns a Duration: 0 means block indefinitely (1 year), otherwise the specified seconds.
 fn parse_blocking_timeout(arg: &RespValue) -> Result<Duration, RespValue> {
-    let s = arg.to_string_lossy().ok_or_else(|| {
-        RespValue::error("ERR timeout is not a float or out of range")
-    })?;
-    let timeout: f64 = s.parse().map_err(|_| {
-        RespValue::error("ERR timeout is not a float or out of range")
-    })?;
+    let s = arg
+        .to_string_lossy()
+        .ok_or_else(|| RespValue::error("ERR timeout is not a float or out of range"))?;
+    let timeout: f64 = s
+        .parse()
+        .map_err(|_| RespValue::error("ERR timeout is not a float or out of range"))?;
     if timeout < 0.0 {
-        return Err(RespValue::error("ERR timeout is not a float or out of range"));
+        return Err(RespValue::error(
+            "ERR timeout is not a float or out of range",
+        ));
     }
     if timeout == 0.0 {
         Ok(Duration::from_secs(365 * 24 * 3600)) // Block indefinitely per Redis spec
@@ -195,11 +197,7 @@ pub async fn cmd_rpush(
     RespValue::integer(len)
 }
 
-pub async fn cmd_lpop(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_lpop(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.is_empty() || args.len() > 2 {
         return wrong_arg_count("lpop");
     }
@@ -255,11 +253,7 @@ pub async fn cmd_lpop(
     }
 }
 
-pub async fn cmd_rpop(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_rpop(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.is_empty() || args.len() > 2 {
         return wrong_arg_count("rpop");
     }
@@ -315,11 +309,7 @@ pub async fn cmd_rpop(
     }
 }
 
-pub async fn cmd_llen(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_llen(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("llen");
     }
@@ -412,11 +402,7 @@ pub async fn cmd_lindex(
     }
 }
 
-pub async fn cmd_lset(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_lset(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("lset");
     }
@@ -498,11 +484,7 @@ pub async fn cmd_linsert(
     }
 }
 
-pub async fn cmd_lrem(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_lrem(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("lrem");
     }
@@ -531,11 +513,7 @@ pub async fn cmd_lrem(
     }
 }
 
-pub async fn cmd_ltrim(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_ltrim(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("ltrim");
     }
@@ -609,22 +587,17 @@ pub async fn cmd_rpoplpush(
     list.lpush(value.clone());
 
     // Clean up empty source
-    if let Some(entry) = db.get(&src) {
-        if let RedisValue::List(list) = &entry.value {
-            if list.is_empty() {
-                db.del(&src);
-            }
-        }
+    if let Some(entry) = db.get(&src)
+        && let RedisValue::List(list) = &entry.value
+        && list.is_empty()
+    {
+        db.del(&src);
     }
 
     RespValue::bulk_string(value)
 }
 
-pub async fn cmd_lmove(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_lmove(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 4 {
         return wrong_arg_count("lmove");
     }
@@ -679,11 +652,7 @@ pub async fn cmd_lmove(
     RespValue::bulk_string(value)
 }
 
-pub async fn cmd_lmpop(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_lmpop(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     // LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]
     if args.len() < 3 {
         return wrong_arg_count("lmpop");
@@ -713,11 +682,12 @@ pub async fn cmd_lmpop(
     let mut count = 1usize;
     let mut i = direction_idx + 1;
     while i < args.len() {
-        if let Some(opt) = arg_to_string(&args[i]) {
-            if opt.to_uppercase() == "COUNT" && i + 1 < args.len() {
-                count = arg_to_i64(&args[i + 1]).unwrap_or(1).max(1) as usize;
-                i += 1;
-            }
+        if let Some(opt) = arg_to_string(&args[i])
+            && opt.to_uppercase() == "COUNT"
+            && i + 1 < args.len()
+        {
+            count = arg_to_i64(&args[i + 1]).unwrap_or(1).max(1) as usize;
+            i += 1;
         }
         i += 1;
     }
@@ -935,11 +905,7 @@ fn try_rpop_from_keys(db: &mut crate::store::Database, keys: &[String]) -> Optio
     None
 }
 
-pub async fn cmd_lpos(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_lpos(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     // LPOS key element [RANK rank] [COUNT count] [MAXLEN maxlen]
     if args.len() < 2 {
         return wrong_arg_count("lpos");
@@ -968,7 +934,11 @@ pub async fn cmd_lpos(
                 i += 1;
                 rank = match args.get(i).and_then(arg_to_i64) {
                     Some(r) if r != 0 => r,
-                    _ => return RespValue::error("ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list"),
+                    _ => {
+                        return RespValue::error(
+                            "ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list",
+                        );
+                    }
                 };
             }
             "COUNT" => {
@@ -999,7 +969,10 @@ pub async fn cmd_lpos(
                 let positions = list.lpos(&element, rank, count, maxlen);
                 if count.is_some() {
                     // COUNT specified: always return array
-                    let resp: Vec<RespValue> = positions.iter().map(|&p| RespValue::integer(p as i64)).collect();
+                    let resp: Vec<RespValue> = positions
+                        .iter()
+                        .map(|&p| RespValue::integer(p as i64))
+                        .collect();
                     RespValue::array(resp)
                 } else {
                     // No COUNT: return single value or null
@@ -1047,7 +1020,9 @@ pub async fn cmd_blmove(
         Some(s) => s.to_uppercase(),
         None => return RespValue::error("ERR syntax error"),
     };
-    if !matches!(wherefrom.as_str(), "LEFT" | "RIGHT") || !matches!(whereto.as_str(), "LEFT" | "RIGHT") {
+    if !matches!(wherefrom.as_str(), "LEFT" | "RIGHT")
+        || !matches!(whereto.as_str(), "LEFT" | "RIGHT")
+    {
         return RespValue::error("ERR syntax error");
     }
 
@@ -1132,11 +1107,12 @@ pub async fn cmd_blmpop(
     let mut count = 1usize;
     let mut i = direction_idx + 1;
     while i < args.len() {
-        if let Some(opt) = arg_to_string(&args[i]) {
-            if opt.to_uppercase() == "COUNT" && i + 1 < args.len() {
-                count = arg_to_i64(&args[i + 1]).unwrap_or(1).max(1) as usize;
-                i += 1;
-            }
+        if let Some(opt) = arg_to_string(&args[i])
+            && opt.to_uppercase() == "COUNT"
+            && i + 1 < args.len()
+        {
+            count = arg_to_i64(&args[i + 1]).unwrap_or(1).max(1) as usize;
+            i += 1;
         }
         i += 1;
     }

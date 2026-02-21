@@ -1,4 +1,6 @@
-use crate::command::{arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error};
+use crate::command::{
+    arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error,
+};
 use crate::connection::ClientState;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
@@ -23,7 +25,11 @@ fn get_or_create_geo<'a>(
 }
 
 /// GEOADD key [NX|XX] [CH] longitude latitude member [longitude latitude member ...]
-pub async fn cmd_geoadd(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_geoadd(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 4 {
         return wrong_arg_count("geoadd");
     }
@@ -44,16 +50,25 @@ pub async fn cmd_geoadd(args: &[RespValue], store: &SharedStore, client: &Client
             None => break,
         };
         match opt.as_str() {
-            "NX" => { nx = true; i += 1; }
-            "XX" => { xx = true; i += 1; }
-            "CH" => { ch = true; i += 1; }
+            "NX" => {
+                nx = true;
+                i += 1;
+            }
+            "XX" => {
+                xx = true;
+                i += 1;
+            }
+            "CH" => {
+                ch = true;
+                i += 1;
+            }
             _ => break,
         }
     }
 
     // Remaining args are longitude latitude member triples
     let triples = &args[i..];
-    if triples.is_empty() || triples.len() % 3 != 0 {
+    if triples.is_empty() || !triples.len().is_multiple_of(3) {
         return wrong_arg_count("geoadd");
     }
 
@@ -83,14 +98,20 @@ pub async fn cmd_geoadd(args: &[RespValue], store: &SharedStore, client: &Client
         };
 
         // Validate ranges
-        if !(-180.0..=180.0).contains(&longitude) || !(-85.05112878..=85.05112878).contains(&latitude) {
+        if !(-180.0..=180.0).contains(&longitude)
+            || !(-85.05112878..=85.05112878).contains(&latitude)
+        {
             return RespValue::error("ERR invalid longitude,latitude pair");
         }
 
         let exists = geo.pos(&member).is_some();
 
-        if nx && exists { continue; }
-        if xx && !exists { continue; }
+        if nx && exists {
+            continue;
+        }
+        if xx && !exists {
+            continue;
+        }
 
         let old_pos = geo.pos(&member);
         let is_new = geo.add(member, longitude, latitude);
@@ -105,7 +126,11 @@ pub async fn cmd_geoadd(args: &[RespValue], store: &SharedStore, client: &Client
 }
 
 /// GEODIST key member1 member2 [m|km|ft|mi]
-pub async fn cmd_geodist(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_geodist(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 3 || args.len() > 4 {
         return wrong_arg_count("geodist");
     }
@@ -140,15 +165,13 @@ pub async fn cmd_geodist(args: &[RespValue], store: &SharedStore, client: &Clien
 
     match db.get(&key) {
         Some(entry) => match &entry.value {
-            RedisValue::Geo(geo) => {
-                match geo.dist(member1, member2) {
-                    Some(d) => {
-                        let converted = d / unit_factor;
-                        RespValue::bulk_string(format!("{:.4}", converted).into_bytes())
-                    }
-                    None => RespValue::null_bulk_string(),
+            RedisValue::Geo(geo) => match geo.dist(member1, member2) {
+                Some(d) => {
+                    let converted = d / unit_factor;
+                    RespValue::bulk_string(format!("{:.4}", converted).into_bytes())
                 }
-            }
+                None => RespValue::null_bulk_string(),
+            },
             _ => wrong_type_error(),
         },
         None => RespValue::null_bulk_string(),
@@ -156,7 +179,11 @@ pub async fn cmd_geodist(args: &[RespValue], store: &SharedStore, client: &Clien
 }
 
 /// GEOPOS key member [member ...]
-pub async fn cmd_geopos(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_geopos(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("geopos");
     }
@@ -202,7 +229,11 @@ pub async fn cmd_geopos(args: &[RespValue], store: &SharedStore, client: &Client
 }
 
 /// GEOSEARCH key FROMMEMBER member|FROMLONLAT lon lat BYRADIUS radius m|km|ft|mi|BYBOX width height m|km|ft|mi [ASC|DESC] [COUNT count]
-pub async fn cmd_geosearch(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_geosearch(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 4 {
         return wrong_arg_count("geosearch");
     }
@@ -225,7 +256,10 @@ pub async fn cmd_geosearch(args: &[RespValue], store: &SharedStore, client: &Cli
     while i < args.len() {
         let opt = match arg_to_string(&args[i]) {
             Some(s) => s.to_uppercase(),
-            None => { i += 1; continue; }
+            None => {
+                i += 1;
+                continue;
+            }
         };
         match opt.as_str() {
             "FROMMEMBER" => {
@@ -295,8 +329,14 @@ pub async fn cmd_geosearch(args: &[RespValue], store: &SharedStore, client: &Cli
                 by_box = Some((width * factor, height * factor, factor));
                 i += 1;
             }
-            "ASC" => { ascending = true; i += 1; }
-            "DESC" => { ascending = false; i += 1; }
+            "ASC" => {
+                ascending = true;
+                i += 1;
+            }
+            "DESC" => {
+                ascending = false;
+                i += 1;
+            }
             "COUNT" => {
                 i += 1;
                 if i >= args.len() {
@@ -305,17 +345,24 @@ pub async fn cmd_geosearch(args: &[RespValue], store: &SharedStore, client: &Cli
                 count = arg_to_i64(&args[i]).map(|n| n.max(0) as usize);
                 i += 1;
                 // Skip optional ANY flag
-                if i < args.len() {
-                    if let Some(s) = arg_to_string(&args[i]) {
-                        if s.to_uppercase() == "ANY" {
-                            i += 1;
-                        }
-                    }
+                if i < args.len()
+                    && let Some(s) = arg_to_string(&args[i])
+                    && s.to_uppercase() == "ANY"
+                {
+                    i += 1;
                 }
             }
-            "WITHCOORD" => { withcoord = true; i += 1; }
-            "WITHDIST" => { withdist = true; i += 1; }
-            _ => { i += 1; }
+            "WITHCOORD" => {
+                withcoord = true;
+                i += 1;
+            }
+            "WITHDIST" => {
+                withdist = true;
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -326,12 +373,10 @@ pub async fn cmd_geosearch(args: &[RespValue], store: &SharedStore, client: &Cli
     let (cx, cy) = if let Some(member) = from_member {
         match db.get(&key) {
             Some(entry) => match &entry.value {
-                RedisValue::Geo(geo) => {
-                    match geo.pos(&member) {
-                        Some((lon, lat)) => (lon, lat),
-                        None => return RespValue::array(vec![]),
-                    }
-                }
+                RedisValue::Geo(geo) => match geo.pos(&member) {
+                    Some((lon, lat)) => (lon, lat),
+                    None => return RespValue::array(vec![]),
+                },
                 _ => return wrong_type_error(),
             },
             None => return RespValue::array(vec![]),
@@ -350,7 +395,9 @@ pub async fn cmd_geosearch(args: &[RespValue], store: &SharedStore, client: &Cli
                 } else if let Some((width_m, height_m, _factor)) = by_box {
                     geo.search_within_box(cx, cy, width_m, height_m, ascending, count)
                 } else {
-                    return RespValue::error("ERR exactly one of BYRADIUS or BYBOX must be provided");
+                    return RespValue::error(
+                        "ERR exactly one of BYRADIUS or BYBOX must be provided",
+                    );
                 }
             }
             _ => return wrong_type_error(),
@@ -394,7 +441,11 @@ pub async fn cmd_geosearch(args: &[RespValue], store: &SharedStore, client: &Cli
 }
 
 /// GEORADIUS key longitude latitude radius m|km|ft|mi [WITHCOORD] [WITHDIST] [COUNT count] [ASC|DESC] [STORE key] [STOREDIST key]
-pub async fn cmd_georadius(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_georadius(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 5 {
         return wrong_arg_count("georadius");
     }
@@ -407,10 +458,10 @@ pub async fn cmd_georadius(args: &[RespValue], store: &SharedStore, client: &Cli
     {
         let mut s = store.write().await;
         let db = s.db(client.db_index);
-        if let Some(entry) = db.get(&key) {
-            if !matches!(&entry.value, RedisValue::Geo(_)) {
-                return wrong_type_error();
-            }
+        if let Some(entry) = db.get(&key)
+            && !matches!(&entry.value, RedisValue::Geo(_))
+        {
+            return wrong_type_error();
         }
     }
 
@@ -443,20 +494,39 @@ pub async fn cmd_georadius(args: &[RespValue], store: &SharedStore, client: &Cli
     while i < args.len() {
         let opt = match arg_to_string(&args[i]) {
             Some(s) => s.to_uppercase(),
-            None => { i += 1; continue; }
+            None => {
+                i += 1;
+                continue;
+            }
         };
         match opt.as_str() {
-            "WITHCOORD" => { withcoord = true; i += 1; }
-            "WITHDIST" => { withdist = true; i += 1; }
-            "ASC" => { ascending = true; i += 1; }
-            "DESC" => { ascending = false; i += 1; }
+            "WITHCOORD" => {
+                withcoord = true;
+                i += 1;
+            }
+            "WITHDIST" => {
+                withdist = true;
+                i += 1;
+            }
+            "ASC" => {
+                ascending = true;
+                i += 1;
+            }
+            "DESC" => {
+                ascending = false;
+                i += 1;
+            }
             "COUNT" => {
                 i += 1;
                 count = args.get(i).and_then(arg_to_i64).map(|n| n.max(0) as usize);
                 i += 1;
             }
-            "STORE" | "STOREDIST" => { i += 2; } // skip store key
-            _ => { i += 1; }
+            "STORE" | "STOREDIST" => {
+                i += 2;
+            } // skip store key
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -465,35 +535,46 @@ pub async fn cmd_georadius(args: &[RespValue], store: &SharedStore, client: &Cli
 
     let results = match db.get(&key) {
         Some(entry) => match &entry.value {
-            RedisValue::Geo(geo) => geo.search_within_radius(lon, lat, radius * factor, ascending, count),
+            RedisValue::Geo(geo) => {
+                geo.search_within_radius(lon, lat, radius * factor, ascending, count)
+            }
             _ => return wrong_type_error(),
         },
         None => return RespValue::array(vec![]),
     };
 
-    let resp: Vec<RespValue> = results.iter().map(|r| {
-        if withcoord || withdist {
-            let mut items = vec![RespValue::bulk_string(r.member.clone())];
-            if withdist {
-                items.push(RespValue::bulk_string(format!("{:.4}", r.distance / factor).into_bytes()));
+    let resp: Vec<RespValue> = results
+        .iter()
+        .map(|r| {
+            if withcoord || withdist {
+                let mut items = vec![RespValue::bulk_string(r.member.clone())];
+                if withdist {
+                    items.push(RespValue::bulk_string(
+                        format!("{:.4}", r.distance / factor).into_bytes(),
+                    ));
+                }
+                if withcoord {
+                    items.push(RespValue::array(vec![
+                        RespValue::bulk_string(format!("{}", r.longitude).into_bytes()),
+                        RespValue::bulk_string(format!("{}", r.latitude).into_bytes()),
+                    ]));
+                }
+                RespValue::array(items)
+            } else {
+                RespValue::bulk_string(r.member.clone())
             }
-            if withcoord {
-                items.push(RespValue::array(vec![
-                    RespValue::bulk_string(format!("{}", r.longitude).into_bytes()),
-                    RespValue::bulk_string(format!("{}", r.latitude).into_bytes()),
-                ]));
-            }
-            RespValue::array(items)
-        } else {
-            RespValue::bulk_string(r.member.clone())
-        }
-    }).collect();
+        })
+        .collect();
 
     RespValue::array(resp)
 }
 
 /// GEORADIUSBYMEMBER key member radius m|km|ft|mi [WITHCOORD] [WITHDIST] [COUNT count] [ASC|DESC]
-pub async fn cmd_georadiusbymember(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_georadiusbymember(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 4 {
         return wrong_arg_count("georadiusbymember");
     }
@@ -526,19 +607,36 @@ pub async fn cmd_georadiusbymember(args: &[RespValue], store: &SharedStore, clie
     while i < args.len() {
         let opt = match arg_to_string(&args[i]) {
             Some(s) => s.to_uppercase(),
-            None => { i += 1; continue; }
+            None => {
+                i += 1;
+                continue;
+            }
         };
         match opt.as_str() {
-            "WITHCOORD" => { withcoord = true; i += 1; }
-            "WITHDIST" => { withdist = true; i += 1; }
-            "ASC" => { ascending = true; i += 1; }
-            "DESC" => { ascending = false; i += 1; }
+            "WITHCOORD" => {
+                withcoord = true;
+                i += 1;
+            }
+            "WITHDIST" => {
+                withdist = true;
+                i += 1;
+            }
+            "ASC" => {
+                ascending = true;
+                i += 1;
+            }
+            "DESC" => {
+                ascending = false;
+                i += 1;
+            }
             "COUNT" => {
                 i += 1;
                 count = args.get(i).and_then(arg_to_i64).map(|n| n.max(0) as usize);
                 i += 1;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -559,35 +657,46 @@ pub async fn cmd_georadiusbymember(args: &[RespValue], store: &SharedStore, clie
 
     let results = match db.get(&key) {
         Some(entry) => match &entry.value {
-            RedisValue::Geo(geo) => geo.search_within_radius(lon, lat, radius * factor, ascending, count),
+            RedisValue::Geo(geo) => {
+                geo.search_within_radius(lon, lat, radius * factor, ascending, count)
+            }
             _ => return wrong_type_error(),
         },
         None => return RespValue::array(vec![]),
     };
 
-    let resp: Vec<RespValue> = results.iter().map(|r| {
-        if withcoord || withdist {
-            let mut items = vec![RespValue::bulk_string(r.member.clone())];
-            if withdist {
-                items.push(RespValue::bulk_string(format!("{:.4}", r.distance / factor).into_bytes()));
+    let resp: Vec<RespValue> = results
+        .iter()
+        .map(|r| {
+            if withcoord || withdist {
+                let mut items = vec![RespValue::bulk_string(r.member.clone())];
+                if withdist {
+                    items.push(RespValue::bulk_string(
+                        format!("{:.4}", r.distance / factor).into_bytes(),
+                    ));
+                }
+                if withcoord {
+                    items.push(RespValue::array(vec![
+                        RespValue::bulk_string(format!("{}", r.longitude).into_bytes()),
+                        RespValue::bulk_string(format!("{}", r.latitude).into_bytes()),
+                    ]));
+                }
+                RespValue::array(items)
+            } else {
+                RespValue::bulk_string(r.member.clone())
             }
-            if withcoord {
-                items.push(RespValue::array(vec![
-                    RespValue::bulk_string(format!("{}", r.longitude).into_bytes()),
-                    RespValue::bulk_string(format!("{}", r.latitude).into_bytes()),
-                ]));
-            }
-            RespValue::array(items)
-        } else {
-            RespValue::bulk_string(r.member.clone())
-        }
-    }).collect();
+        })
+        .collect();
 
     RespValue::array(resp)
 }
 
 /// GEOSEARCHSTORE destination source [FROMMEMBER member|FROMLONLAT lon lat] [BYRADIUS radius m|km|ft|mi|BYBOX width height m|km|ft|mi] [ASC|DESC] [COUNT count]
-pub async fn cmd_geosearchstore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_geosearchstore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 5 {
         return wrong_arg_count("geosearchstore");
     }
@@ -605,10 +714,10 @@ pub async fn cmd_geosearchstore(args: &[RespValue], store: &SharedStore, client:
     {
         let mut s = store.write().await;
         let db = s.db(client.db_index);
-        if let Some(entry) = db.get(&source_key) {
-            if !matches!(&entry.value, RedisValue::Geo(_)) {
-                return wrong_type_error();
-            }
+        if let Some(entry) = db.get(&source_key)
+            && !matches!(&entry.value, RedisValue::Geo(_))
+        {
+            return wrong_type_error();
         }
     }
 
@@ -631,8 +740,9 @@ pub async fn cmd_geosearchstore(args: &[RespValue], store: &SharedStore, client:
             // Get source geo data
             let members_to_copy: Vec<(Vec<u8>, f64, f64)> = match db.get(&source_key) {
                 Some(entry) => match &entry.value {
-                    RedisValue::Geo(geo) => {
-                        items.iter().filter_map(|item| {
+                    RedisValue::Geo(geo) => items
+                        .iter()
+                        .filter_map(|item| {
                             let member_name = match item {
                                 RespValue::BulkString(Some(data)) => data.clone(),
                                 RespValue::Array(Some(inner)) => {
@@ -644,9 +754,10 @@ pub async fn cmd_geosearchstore(args: &[RespValue], store: &SharedStore, client:
                                 }
                                 _ => return None,
                             };
-                            geo.pos(&member_name).map(|(lon, lat)| (member_name, lon, lat))
-                        }).collect()
-                    }
+                            geo.pos(&member_name)
+                                .map(|(lon, lat)| (member_name, lon, lat))
+                        })
+                        .collect(),
                     _ => return wrong_type_error(),
                 },
                 None => vec![],
@@ -665,7 +776,11 @@ pub async fn cmd_geosearchstore(args: &[RespValue], store: &SharedStore, client:
 }
 
 /// GEOHASH key member [member ...] — return Geohash strings (stub returning empty strings)
-pub async fn cmd_geohash(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_geohash(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("geohash");
     }
@@ -680,25 +795,31 @@ pub async fn cmd_geohash(args: &[RespValue], store: &SharedStore, client: &Clien
     match db.get(&key) {
         Some(entry) => match &entry.value {
             RedisValue::Geo(geo) => {
-                let results: Vec<RespValue> = args[1..].iter().map(|arg| {
-                    if let Some(member) = arg_to_bytes(arg) {
-                        if let Some((lon, lat)) = geo.pos(member) {
-                            // Simple geohash encoding (11-char base32)
-                            let hash = encode_geohash(lon, lat, 11);
-                            RespValue::bulk_string(hash.into_bytes())
+                let results: Vec<RespValue> = args[1..]
+                    .iter()
+                    .map(|arg| {
+                        if let Some(member) = arg_to_bytes(arg) {
+                            if let Some((lon, lat)) = geo.pos(member) {
+                                // Simple geohash encoding (11-char base32)
+                                let hash = encode_geohash(lon, lat, 11);
+                                RespValue::bulk_string(hash.into_bytes())
+                            } else {
+                                RespValue::null_bulk_string()
+                            }
                         } else {
                             RespValue::null_bulk_string()
                         }
-                    } else {
-                        RespValue::null_bulk_string()
-                    }
-                }).collect();
+                    })
+                    .collect();
                 RespValue::array(results)
             }
             _ => wrong_type_error(),
         },
         None => {
-            let nulls: Vec<RespValue> = args[1..].iter().map(|_| RespValue::null_bulk_string()).collect();
+            let nulls: Vec<RespValue> = args[1..]
+                .iter()
+                .map(|_| RespValue::null_bulk_string())
+                .collect();
             RespValue::array(nulls)
         }
     }
@@ -747,7 +868,11 @@ fn encode_geohash(lon: f64, lat: f64, precision: usize) -> String {
 }
 
 /// GEOMEMBERS key — return all members in the geo set (non-standard, utility command).
-pub async fn cmd_geomembers(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_geomembers(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("geomembers");
     }

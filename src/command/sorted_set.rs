@@ -1,4 +1,6 @@
-use crate::command::{arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error};
+use crate::command::{
+    arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error,
+};
 use crate::connection::ClientState;
 use crate::keywatcher::SharedKeyWatcher;
 use crate::resp::RespValue;
@@ -13,7 +15,10 @@ fn get_or_create_zset<'a>(
     key: &str,
 ) -> Result<&'a mut RedisSortedSet, RespValue> {
     if !db.exists(key) {
-        db.set(key.to_string(), Entry::new(RedisValue::SortedSet(RedisSortedSet::new())));
+        db.set(
+            key.to_string(),
+            Entry::new(RedisValue::SortedSet(RedisSortedSet::new())),
+        );
     }
     match db.get_mut(key) {
         Some(entry) => match &mut entry.value {
@@ -24,7 +29,12 @@ fn get_or_create_zset<'a>(
     }
 }
 
-pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientState, key_watcher: &SharedKeyWatcher) -> RespValue {
+pub async fn cmd_zadd(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
+) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("zadd");
     }
@@ -48,12 +58,30 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
             None => break,
         };
         match opt.as_str() {
-            "NX" => { nx = true; i += 1; }
-            "XX" => { xx = true; i += 1; }
-            "GT" => { gt = true; i += 1; }
-            "LT" => { lt = true; i += 1; }
-            "CH" => { ch = true; i += 1; }
-            "INCR" => { incr = true; i += 1; }
+            "NX" => {
+                nx = true;
+                i += 1;
+            }
+            "XX" => {
+                xx = true;
+                i += 1;
+            }
+            "GT" => {
+                gt = true;
+                i += 1;
+            }
+            "LT" => {
+                lt = true;
+                i += 1;
+            }
+            "CH" => {
+                ch = true;
+                i += 1;
+            }
+            "INCR" => {
+                incr = true;
+                i += 1;
+            }
             _ => break,
         }
     }
@@ -71,7 +99,7 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
 
     // Remaining args are score-member pairs
     let pairs = &args[i..];
-    if pairs.is_empty() || pairs.len() % 2 != 0 {
+    if pairs.is_empty() || !pairs.len().is_multiple_of(2) {
         return RespValue::error("ERR syntax error");
     }
 
@@ -101,8 +129,12 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
             None => (false, None),
         };
 
-        if nx && exists { return RespValue::null_bulk_string(); }
-        if xx && !exists { return RespValue::null_bulk_string(); }
+        if nx && exists {
+            return RespValue::null_bulk_string();
+        }
+        if xx && !exists {
+            return RespValue::null_bulk_string();
+        }
 
         // Check GT/LT before modifying
         if let Some(old) = old_score {
@@ -110,8 +142,12 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
             if new_score.is_nan() {
                 return RespValue::error("ERR resulting score is not a number (NaN)");
             }
-            if gt && new_score <= old { return RespValue::null_bulk_string(); }
-            if lt && new_score >= old { return RespValue::null_bulk_string(); }
+            if gt && new_score <= old {
+                return RespValue::null_bulk_string();
+            }
+            if lt && new_score >= old {
+                return RespValue::null_bulk_string();
+            }
         }
 
         let zset = match get_or_create_zset(db, &key) {
@@ -148,10 +184,10 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
         }
 
         // Check type before creating
-        if let Some(entry) = db.get(&key) {
-            if !matches!(&entry.value, RedisValue::SortedSet(_)) {
-                return wrong_type_error();
-            }
+        if let Some(entry) = db.get(&key)
+            && !matches!(&entry.value, RedisValue::SortedSet(_))
+        {
+            return wrong_type_error();
         }
 
         let zset = match get_or_create_zset(db, &key) {
@@ -163,17 +199,24 @@ pub async fn cmd_zadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
         let mut changed = 0i64;
 
         for (score, member) in parsed_pairs {
-
             let exists = zset.contains(&member);
             let old_score = zset.score(&member);
 
-            if nx && exists { continue; }
-            if xx && !exists { continue; }
+            if nx && exists {
+                continue;
+            }
+            if xx && !exists {
+                continue;
+            }
 
             // GT/LT checks
             if let Some(old) = old_score {
-                if gt && score <= old { continue; }
-                if lt && score >= old { continue; }
+                if gt && score <= old {
+                    continue;
+                }
+                if lt && score >= old {
+                    continue;
+                }
             }
 
             let is_new = zset.add(member, score);
@@ -212,7 +255,8 @@ pub async fn cmd_zrem(args: &[RespValue], store: &SharedStore, client: &ClientSt
     let db = store.db(client.db_index);
 
     // Check type first
-    let is_zset = matches!(db.get(&key), Some(entry) if matches!(&entry.value, RedisValue::SortedSet(_)));
+    let is_zset =
+        matches!(db.get(&key), Some(entry) if matches!(&entry.value, RedisValue::SortedSet(_)));
     if !is_zset {
         return match db.get(&key) {
             Some(_) => wrong_type_error(),
@@ -221,31 +265,34 @@ pub async fn cmd_zrem(args: &[RespValue], store: &SharedStore, client: &ClientSt
     }
 
     let mut removed = 0i64;
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::SortedSet(zset) = &mut entry.value {
-            for arg in &args[1..] {
-                if let Some(member) = arg_to_bytes(arg) {
-                    if zset.remove(member) {
-                        removed += 1;
-                    }
-                }
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::SortedSet(zset) = &mut entry.value
+    {
+        for arg in &args[1..] {
+            if let Some(member) = arg_to_bytes(arg)
+                && zset.remove(member)
+            {
+                removed += 1;
             }
         }
     }
 
     // Auto-delete key when sorted set becomes empty
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::SortedSet(z) = &entry.value {
-            if z.is_empty() {
-                db.del(&key);
-            }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::SortedSet(z) = &entry.value
+        && z.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::integer(removed)
 }
 
-pub async fn cmd_zscore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zscore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 2 {
         return wrong_arg_count("zscore");
     }
@@ -331,7 +378,11 @@ pub async fn cmd_zrank(args: &[RespValue], store: &SharedStore, client: &ClientS
     }
 }
 
-pub async fn cmd_zrevrank(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zrevrank(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 2 || args.len() > 3 {
         return wrong_arg_count("zrevrank");
     }
@@ -410,7 +461,11 @@ pub async fn cmd_zcard(args: &[RespValue], store: &SharedStore, client: &ClientS
     }
 }
 
-pub async fn cmd_zcount(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zcount(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("zcount");
     }
@@ -433,11 +488,20 @@ pub async fn cmd_zcount(args: &[RespValue], store: &SharedStore, client: &Client
     match db.get(&key) {
         Some(entry) => match &entry.value {
             RedisValue::SortedSet(zset) => {
-                let count = zset.range_by_score(min_val, max_val)
+                let count = zset
+                    .range_by_score(min_val, max_val)
                     .into_iter()
                     .filter(|&(_, score)| {
-                        let above_min = if min_incl { score >= min_val } else { score > min_val };
-                        let below_max = if max_incl { score <= max_val } else { score < max_val };
+                        let above_min = if min_incl {
+                            score >= min_val
+                        } else {
+                            score > min_val
+                        };
+                        let below_max = if max_incl {
+                            score <= max_val
+                        } else {
+                            score < max_val
+                        };
                         above_min && below_max
                     })
                     .count();
@@ -479,7 +543,11 @@ fn format_range_result(items: Vec<(&[u8], f64)>, withscores: bool) -> RespValue 
     RespValue::array(result)
 }
 
-pub async fn cmd_zrange(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zrange(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     // ZRANGE key min max [BYSCORE | BYLEX] [REV] [LIMIT offset count] [WITHSCORES]
     if args.len() < 3 {
         return wrong_arg_count("zrange");
@@ -499,7 +567,9 @@ pub async fn cmd_zrange(args: &[RespValue], store: &SharedStore, client: &Client
 
     let mut i = 3;
     while i < args.len() {
-        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        let opt = arg_to_string(&args[i])
+            .map(|s| s.to_uppercase())
+            .unwrap_or_default();
         match opt.as_str() {
             "BYSCORE" => byscore = true,
             "BYLEX" => bylex = true,
@@ -534,7 +604,11 @@ pub async fn cmd_zrange(args: &[RespValue], store: &SharedStore, client: &Client
 
     if byscore {
         // Score-based range
-        let (min_arg, max_arg) = if rev { (&args[2], &args[1]) } else { (&args[1], &args[2]) };
+        let (min_arg, max_arg) = if rev {
+            (&args[2], &args[1])
+        } else {
+            (&args[1], &args[2])
+        };
         let (min_val, min_incl) = match parse_score_bound(min_arg, f64::NEG_INFINITY) {
             Some(s) => s,
             None => return RespValue::error("ERR min or max is not a float"),
@@ -551,8 +625,16 @@ pub async fn cmd_zrange(args: &[RespValue], store: &SharedStore, client: &Client
                         .range_by_score(min_val, max_val)
                         .into_iter()
                         .filter(|&(_, score)| {
-                            let above_min = if min_incl { score >= min_val } else { score > min_val };
-                            let below_max = if max_incl { score <= max_val } else { score < max_val };
+                            let above_min = if min_incl {
+                                score >= min_val
+                            } else {
+                                score > min_val
+                            };
+                            let below_max = if max_incl {
+                                score <= max_val
+                            } else {
+                                score < max_val
+                            };
                             above_min && below_max
                         })
                         .collect();
@@ -574,7 +656,11 @@ pub async fn cmd_zrange(args: &[RespValue], store: &SharedStore, client: &Client
         }
     } else if bylex {
         // Lex-based range
-        let (min_arg, max_arg) = if rev { (&args[2], &args[1]) } else { (&args[1], &args[2]) };
+        let (min_arg, max_arg) = if rev {
+            (&args[2], &args[1])
+        } else {
+            (&args[1], &args[2])
+        };
         let min_bound = match parse_lex_bound(min_arg) {
             Some(b) => b,
             None => return RespValue::error("ERR min or max not valid string range item"),
@@ -637,7 +723,11 @@ pub async fn cmd_zrange(args: &[RespValue], store: &SharedStore, client: &Client
     }
 }
 
-pub async fn cmd_zrevrange(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zrevrange(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("zrevrange");
     }
@@ -690,13 +780,19 @@ fn parse_score_bound(arg: &RespValue, _default: f64) -> Option<(f64, bool)> {
         }
         _ => {
             let v: f64 = s.parse().ok()?;
-            if v.is_nan() { return None; }
+            if v.is_nan() {
+                return None;
+            }
             Some((v, true))
         }
     }
 }
 
-pub async fn cmd_zrangebyscore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zrangebyscore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("zrangebyscore");
     }
@@ -718,7 +814,9 @@ pub async fn cmd_zrangebyscore(args: &[RespValue], store: &SharedStore, client: 
     let mut count = usize::MAX;
     let mut i = 3;
     while i < args.len() {
-        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        let opt = arg_to_string(&args[i])
+            .map(|s| s.to_uppercase())
+            .unwrap_or_default();
         match opt.as_str() {
             "WITHSCORES" => withscores = true,
             "LIMIT" => {
@@ -739,11 +837,20 @@ pub async fn cmd_zrangebyscore(args: &[RespValue], store: &SharedStore, client: 
     match db.get(&key) {
         Some(entry) => match &entry.value {
             RedisValue::SortedSet(zset) => {
-                let items: Vec<_> = zset.range_by_score(min_val, max_val)
+                let items: Vec<_> = zset
+                    .range_by_score(min_val, max_val)
                     .into_iter()
                     .filter(|&(_, score)| {
-                        let above_min = if min_incl { score >= min_val } else { score > min_val };
-                        let below_max = if max_incl { score <= max_val } else { score < max_val };
+                        let above_min = if min_incl {
+                            score >= min_val
+                        } else {
+                            score > min_val
+                        };
+                        let below_max = if max_incl {
+                            score <= max_val
+                        } else {
+                            score < max_val
+                        };
                         above_min && below_max
                     })
                     .skip(offset)
@@ -757,7 +864,11 @@ pub async fn cmd_zrangebyscore(args: &[RespValue], store: &SharedStore, client: 
     }
 }
 
-pub async fn cmd_zrevrangebyscore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zrevrangebyscore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("zrevrangebyscore");
     }
@@ -780,7 +891,9 @@ pub async fn cmd_zrevrangebyscore(args: &[RespValue], store: &SharedStore, clien
     let mut count = usize::MAX;
     let mut i = 3;
     while i < args.len() {
-        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        let opt = arg_to_string(&args[i])
+            .map(|s| s.to_uppercase())
+            .unwrap_or_default();
         match opt.as_str() {
             "WITHSCORES" => withscores = true,
             "LIMIT" => {
@@ -801,11 +914,20 @@ pub async fn cmd_zrevrangebyscore(args: &[RespValue], store: &SharedStore, clien
     match db.get(&key) {
         Some(entry) => match &entry.value {
             RedisValue::SortedSet(zset) => {
-                let mut items: Vec<_> = zset.range_by_score(min_val, max_val)
+                let mut items: Vec<_> = zset
+                    .range_by_score(min_val, max_val)
                     .into_iter()
                     .filter(|&(_, score)| {
-                        let above_min = if min_incl { score >= min_val } else { score > min_val };
-                        let below_max = if max_incl { score <= max_val } else { score < max_val };
+                        let above_min = if min_incl {
+                            score >= min_val
+                        } else {
+                            score > min_val
+                        };
+                        let below_max = if max_incl {
+                            score <= max_val
+                        } else {
+                            score < max_val
+                        };
                         above_min && below_max
                     })
                     .collect();
@@ -819,7 +941,11 @@ pub async fn cmd_zrevrangebyscore(args: &[RespValue], store: &SharedStore, clien
     }
 }
 
-pub async fn cmd_zrangebylex(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zrangebylex(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("zrangebylex");
     }
@@ -841,11 +967,15 @@ pub async fn cmd_zrangebylex(args: &[RespValue], store: &SharedStore, client: &C
     let mut count = usize::MAX;
     let mut i = 3;
     while i < args.len() {
-        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        let opt = arg_to_string(&args[i])
+            .map(|s| s.to_uppercase())
+            .unwrap_or_default();
         if opt == "LIMIT" && i + 2 < args.len() {
             let off = arg_to_i64(&args[i + 1]).unwrap_or(0);
             let cnt = arg_to_i64(&args[i + 2]).unwrap_or(-1);
-            if off < 0 { return RespValue::array(vec![]); }
+            if off < 0 {
+                return RespValue::array(vec![]);
+            }
             offset = off as usize;
             count = if cnt < 0 { usize::MAX } else { cnt as usize };
             i += 2;
@@ -859,7 +989,8 @@ pub async fn cmd_zrangebylex(args: &[RespValue], store: &SharedStore, client: &C
     match db.get(&key) {
         Some(entry) => match &entry.value {
             RedisValue::SortedSet(zset) => {
-                let resp: Vec<RespValue> = zset.iter()
+                let resp: Vec<RespValue> = zset
+                    .iter()
                     .filter(|(m, _)| lex_in_range(m, &min_bound, &max_bound))
                     .map(|(m, _)| RespValue::bulk_string(m.to_vec()))
                     .skip(offset)
@@ -873,7 +1004,11 @@ pub async fn cmd_zrangebylex(args: &[RespValue], store: &SharedStore, client: &C
     }
 }
 
-pub async fn cmd_zrevrangebylex(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zrevrangebylex(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("zrevrangebylex");
     }
@@ -896,11 +1031,15 @@ pub async fn cmd_zrevrangebylex(args: &[RespValue], store: &SharedStore, client:
     let mut count = usize::MAX;
     let mut i = 3;
     while i < args.len() {
-        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        let opt = arg_to_string(&args[i])
+            .map(|s| s.to_uppercase())
+            .unwrap_or_default();
         if opt == "LIMIT" && i + 2 < args.len() {
             let off = arg_to_i64(&args[i + 1]).unwrap_or(0);
             let cnt = arg_to_i64(&args[i + 2]).unwrap_or(-1);
-            if off < 0 { return RespValue::array(vec![]); }
+            if off < 0 {
+                return RespValue::array(vec![]);
+            }
             offset = off as usize;
             count = if cnt < 0 { usize::MAX } else { cnt as usize };
             i += 2;
@@ -914,11 +1053,13 @@ pub async fn cmd_zrevrangebylex(args: &[RespValue], store: &SharedStore, client:
     match db.get(&key) {
         Some(entry) => match &entry.value {
             RedisValue::SortedSet(zset) => {
-                let mut items: Vec<_> = zset.iter()
+                let mut items: Vec<_> = zset
+                    .iter()
                     .filter(|(m, _)| lex_in_range(m, &min_bound, &max_bound))
                     .collect();
                 items.reverse();
-                let resp: Vec<RespValue> = items.into_iter()
+                let resp: Vec<RespValue> = items
+                    .into_iter()
                     .map(|(m, _)| RespValue::bulk_string(m.to_vec()))
                     .skip(offset)
                     .take(count)
@@ -944,8 +1085,8 @@ fn parse_lex_bound(arg: &RespValue) -> Option<LexBound> {
     match s.as_str() {
         "-" => Some(LexBound::NegInf),
         "+" => Some(LexBound::PosInf),
-        _ if s.starts_with('[') => Some(LexBound::Inclusive(s[1..].as_bytes().to_vec())),
-        _ if s.starts_with('(') => Some(LexBound::Exclusive(s[1..].as_bytes().to_vec())),
+        _ if s.starts_with('[') => Some(LexBound::Inclusive(s.as_bytes()[1..].to_vec())),
+        _ if s.starts_with('(') => Some(LexBound::Exclusive(s.as_bytes()[1..].to_vec())),
         _ => None,
     }
 }
@@ -953,7 +1094,7 @@ fn parse_lex_bound(arg: &RespValue) -> Option<LexBound> {
 fn lex_above_min(m: &[u8], min: &LexBound) -> bool {
     match min {
         LexBound::NegInf => true,
-        LexBound::PosInf => false,  // nothing is above +inf
+        LexBound::PosInf => false, // nothing is above +inf
         LexBound::Inclusive(v) => m >= v.as_slice(),
         LexBound::Exclusive(v) => m > v.as_slice(),
     }
@@ -961,7 +1102,7 @@ fn lex_above_min(m: &[u8], min: &LexBound) -> bool {
 
 fn lex_below_max(m: &[u8], max: &LexBound) -> bool {
     match max {
-        LexBound::NegInf => false,  // nothing is below -inf
+        LexBound::NegInf => false, // nothing is below -inf
         LexBound::PosInf => true,
         LexBound::Inclusive(v) => m <= v.as_slice(),
         LexBound::Exclusive(v) => m < v.as_slice(),
@@ -972,7 +1113,11 @@ fn lex_in_range(m: &[u8], min: &LexBound, max: &LexBound) -> bool {
     lex_above_min(m, min) && lex_below_max(m, max)
 }
 
-pub async fn cmd_zremrangebyscore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zremrangebyscore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("zremrangebyscore");
     }
@@ -994,42 +1139,54 @@ pub async fn cmd_zremrangebyscore(args: &[RespValue], store: &SharedStore, clien
 
     let members_to_remove: Vec<Vec<u8>> = match db.get(&key) {
         Some(entry) => match &entry.value {
-            RedisValue::SortedSet(zset) => {
-                zset.range_by_score(min_val, max_val)
-                    .into_iter()
-                    .filter(|&(_, score)| {
-                        let above_min = if min_incl { score >= min_val } else { score > min_val };
-                        let below_max = if max_incl { score <= max_val } else { score < max_val };
-                        above_min && below_max
-                    })
-                    .map(|(m, _)| m.to_vec())
-                    .collect()
-            }
+            RedisValue::SortedSet(zset) => zset
+                .range_by_score(min_val, max_val)
+                .into_iter()
+                .filter(|&(_, score)| {
+                    let above_min = if min_incl {
+                        score >= min_val
+                    } else {
+                        score > min_val
+                    };
+                    let below_max = if max_incl {
+                        score <= max_val
+                    } else {
+                        score < max_val
+                    };
+                    above_min && below_max
+                })
+                .map(|(m, _)| m.to_vec())
+                .collect(),
             _ => return wrong_type_error(),
         },
         None => return RespValue::integer(0),
     };
 
     let removed = members_to_remove.len() as i64;
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::SortedSet(zset) = &mut entry.value {
-            for m in &members_to_remove {
-                zset.remove(m);
-            }
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::SortedSet(zset) = &mut entry.value
+    {
+        for m in &members_to_remove {
+            zset.remove(m);
         }
     }
 
     // Auto-delete empty key
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::SortedSet(z) = &entry.value {
-            if z.is_empty() { db.del(&key); }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::SortedSet(z) = &entry.value
+        && z.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::integer(removed)
 }
 
-pub async fn cmd_zremrangebylex(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zremrangebylex(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("zremrangebylex");
     }
@@ -1051,36 +1208,40 @@ pub async fn cmd_zremrangebylex(args: &[RespValue], store: &SharedStore, client:
 
     let members_to_remove: Vec<Vec<u8>> = match db.get(&key) {
         Some(entry) => match &entry.value {
-            RedisValue::SortedSet(zset) => {
-                zset.iter()
-                    .filter(|(m, _)| lex_in_range(m, &min_bound, &max_bound))
-                    .map(|(m, _)| m.to_vec())
-                    .collect()
-            }
+            RedisValue::SortedSet(zset) => zset
+                .iter()
+                .filter(|(m, _)| lex_in_range(m, &min_bound, &max_bound))
+                .map(|(m, _)| m.to_vec())
+                .collect(),
             _ => return wrong_type_error(),
         },
         None => return RespValue::integer(0),
     };
 
     let removed = members_to_remove.len() as i64;
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::SortedSet(zset) = &mut entry.value {
-            for m in &members_to_remove {
-                zset.remove(m);
-            }
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::SortedSet(zset) = &mut entry.value
+    {
+        for m in &members_to_remove {
+            zset.remove(m);
         }
     }
 
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::SortedSet(z) = &entry.value {
-            if z.is_empty() { db.del(&key); }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::SortedSet(z) = &entry.value
+        && z.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::integer(removed)
 }
 
-pub async fn cmd_zremrangebyrank(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zremrangebyrank(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("zremrangebyrank");
     }
@@ -1102,36 +1263,40 @@ pub async fn cmd_zremrangebyrank(args: &[RespValue], store: &SharedStore, client
 
     let members_to_remove: Vec<Vec<u8>> = match db.get(&key) {
         Some(entry) => match &entry.value {
-            RedisValue::SortedSet(zset) => {
-                zset.range(start, stop)
-                    .into_iter()
-                    .map(|(m, _)| m.to_vec())
-                    .collect()
-            }
+            RedisValue::SortedSet(zset) => zset
+                .range(start, stop)
+                .into_iter()
+                .map(|(m, _)| m.to_vec())
+                .collect(),
             _ => return wrong_type_error(),
         },
         None => return RespValue::integer(0),
     };
 
     let removed = members_to_remove.len() as i64;
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::SortedSet(zset) = &mut entry.value {
-            for m in &members_to_remove {
-                zset.remove(m);
-            }
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::SortedSet(zset) = &mut entry.value
+    {
+        for m in &members_to_remove {
+            zset.remove(m);
         }
     }
 
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::SortedSet(z) = &entry.value {
-            if z.is_empty() { db.del(&key); }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::SortedSet(z) = &entry.value
+        && z.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::integer(removed)
 }
 
-pub async fn cmd_zincrby(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zincrby(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("zincrby");
     }
@@ -1163,24 +1328,45 @@ pub async fn cmd_zincrby(args: &[RespValue], store: &SharedStore, client: &Clien
     RespValue::bulk_string(format!("{new_score}").into_bytes())
 }
 
-pub async fn cmd_zunionstore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zunionstore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     zstore_op(args, store, client, "zunionstore").await
 }
 
-pub async fn cmd_zinterstore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zinterstore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     zstore_op(args, store, client, "zinterstore").await
 }
 
-async fn zstore_op(args: &[RespValue], store: &SharedStore, client: &ClientState, cmd: &str) -> RespValue {
+async fn zstore_op(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    cmd: &str,
+) -> RespValue {
     // Delegate to the unified combine op which handles WEIGHTS/AGGREGATE/regular sets
     zset_combine_op(args, store, client, cmd, true).await
 }
 
-pub async fn cmd_zunion(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zunion(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     zset_combine_op(args, store, client, "zunion", false).await
 }
 
-pub async fn cmd_zinter(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zinter(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     zset_combine_op(args, store, client, "zinter", false).await
 }
 
@@ -1188,11 +1374,21 @@ pub async fn cmd_zdiff(args: &[RespValue], store: &SharedStore, client: &ClientS
     zset_combine_op(args, store, client, "zdiff", false).await
 }
 
-pub async fn cmd_zdiffstore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zdiffstore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     zset_combine_op(args, store, client, "zdiffstore", true).await
 }
 
-async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &ClientState, cmd: &str, is_store: bool) -> RespValue {
+async fn zset_combine_op(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    cmd: &str,
+    is_store: bool,
+) -> RespValue {
     let min_args = if is_store { 3 } else { 2 };
     if args.len() < min_args {
         return wrong_arg_count(cmd);
@@ -1211,7 +1407,11 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
     let base_cmd = cmd.trim_end_matches("store");
     let numkeys = match arg_to_i64(&args[arg_offset]) {
         Some(n) if n > 0 => n as usize,
-        Some(0) => return RespValue::error(&format!("ERR at least 1 input key is needed for '{cmd}' command")),
+        Some(0) => {
+            return RespValue::error(format!(
+                "ERR at least 1 input key is needed for '{cmd}' command"
+            ));
+        }
         _ => return RespValue::error("ERR value is not an integer or out of range"),
     };
 
@@ -1225,7 +1425,9 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
     let mut withscores = false;
     let mut i = arg_offset + 1 + numkeys;
     while i < args.len() {
-        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        let opt = arg_to_string(&args[i])
+            .map(|s| s.to_uppercase())
+            .unwrap_or_default();
         match opt.as_str() {
             "WEIGHTS" => {
                 for j in 0..numkeys {
@@ -1240,7 +1442,9 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
             }
             "AGGREGATE" => {
                 if i + 1 < args.len() {
-                    let agg = arg_to_string(&args[i + 1]).map(|s| s.to_uppercase()).unwrap_or_default();
+                    let agg = arg_to_string(&args[i + 1])
+                        .map(|s| s.to_uppercase())
+                        .unwrap_or_default();
                     match agg.as_str() {
                         "SUM" => aggregate = "SUM",
                         "MIN" => aggregate = "MIN",
@@ -1269,7 +1473,10 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
     for j in 0..numkeys {
         let key = match arg_to_string(&args[arg_offset + 1 + j]) {
             Some(k) => k,
-            None => { zsets.push(vec![]); continue; }
+            None => {
+                zsets.push(vec![]);
+                continue;
+            }
         };
         match db.get(&key) {
             Some(entry) => match &entry.value {
@@ -1277,7 +1484,12 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
                     zsets.push(zset.iter().map(|(m, s)| (m.to_vec(), s)).collect());
                 }
                 RedisValue::Set(set) => {
-                    zsets.push(set.members().into_iter().map(|m| (m.to_vec(), 1.0)).collect());
+                    zsets.push(
+                        set.members()
+                            .into_iter()
+                            .map(|m| (m.to_vec(), 1.0))
+                            .collect(),
+                    );
                 }
                 _ => return wrong_type_error(),
             },
@@ -1294,7 +1506,11 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
             let w = weights[idx];
             for (member, score) in zset {
                 let raw_weighted = score * w;
-                let weighted = if raw_weighted.is_nan() { 0.0 } else { raw_weighted };
+                let weighted = if raw_weighted.is_nan() {
+                    0.0
+                } else {
+                    raw_weighted
+                };
                 let entry = scores.entry(member.clone()).or_insert(match aggregate {
                     "MIN" => f64::INFINITY,
                     "MAX" => f64::NEG_INFINITY,
@@ -1306,8 +1522,16 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
                         // Redis: inf + (-inf) = 0
                         *entry = if sum.is_nan() { 0.0 } else { sum };
                     }
-                    "MIN" => { if weighted < *entry { *entry = weighted; } }
-                    "MAX" => { if weighted > *entry { *entry = weighted; } }
+                    "MIN" => {
+                        if weighted < *entry {
+                            *entry = weighted;
+                        }
+                    }
+                    "MAX" => {
+                        if weighted > *entry {
+                            *entry = weighted;
+                        }
+                    }
                     _ => {
                         let sum = *entry + weighted;
                         *entry = if sum.is_nan() { 0.0 } else { sum };
@@ -1333,8 +1557,16 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
                                 let sum = agg_score + weighted;
                                 agg_score = if sum.is_nan() { 0.0 } else { sum };
                             }
-                            "MIN" => { if weighted < agg_score { agg_score = weighted; } }
-                            "MAX" => { if weighted > agg_score { agg_score = weighted; } }
+                            "MIN" => {
+                                if weighted < agg_score {
+                                    agg_score = weighted;
+                                }
+                            }
+                            "MAX" => {
+                                if weighted > agg_score {
+                                    agg_score = weighted;
+                                }
+                            }
                             _ => {
                                 let sum = agg_score + weighted;
                                 agg_score = if sum.is_nan() { 0.0 } else { sum };
@@ -1354,9 +1586,9 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
         // zdiff: members in first set not in any other set
         if let Some(first) = zsets.first() {
             for (member, score) in first {
-                let in_others = zsets[1..].iter().any(|zset| {
-                    zset.iter().any(|(m, _)| m == member)
-                });
+                let in_others = zsets[1..]
+                    .iter()
+                    .any(|zset| zset.iter().any(|(m, _)| m == member));
                 if !in_others {
                     result.add(member.clone(), *score);
                 }
@@ -1379,13 +1611,19 @@ async fn zset_combine_op(args: &[RespValue], store: &SharedStore, client: &Clien
     }
 }
 
-pub async fn cmd_zintercard(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zintercard(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("zintercard");
     }
     let numkeys = match arg_to_i64(&args[0]) {
         Some(n) if n > 0 => n as usize,
-        Some(0) => return RespValue::error("ERR at least 1 input key is needed for 'zintercard' command"),
+        Some(0) => {
+            return RespValue::error("ERR at least 1 input key is needed for 'zintercard' command");
+        }
         _ => return RespValue::error("ERR numkeys can't be non-positive value"),
     };
 
@@ -1397,13 +1635,18 @@ pub async fn cmd_zintercard(args: &[RespValue], store: &SharedStore, client: &Cl
     let mut limit = 0usize; // 0 = unlimited
     let mut i = 1 + numkeys;
     while i < args.len() {
-        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        let opt = arg_to_string(&args[i])
+            .map(|s| s.to_uppercase())
+            .unwrap_or_default();
         if opt == "LIMIT" {
             if i + 1 >= args.len() {
                 return RespValue::error("ERR syntax error");
             }
             match arg_to_i64(&args[i + 1]) {
-                Some(v) if v >= 0 => { limit = v as usize; i += 2; }
+                Some(v) if v >= 0 => {
+                    limit = v as usize;
+                    i += 2;
+                }
                 _ => return RespValue::error("ERR LIMIT can't be negative"),
             }
         } else {
@@ -1419,7 +1662,10 @@ pub async fn cmd_zintercard(args: &[RespValue], store: &SharedStore, client: &Cl
     for j in 0..numkeys {
         let key = match arg_to_string(&args[1 + j]) {
             Some(k) => k,
-            None => { zsets.push(vec![]); continue; }
+            None => {
+                zsets.push(vec![]);
+                continue;
+            }
         };
         match db.get(&key) {
             Some(entry) => match &entry.value {
@@ -1443,7 +1689,9 @@ pub async fn cmd_zintercard(args: &[RespValue], store: &SharedStore, client: &Cl
     let mut count = 0usize;
     if let Some(first) = zsets.first() {
         for member in first {
-            let in_all = zsets[1..].iter().all(|zset| zset.iter().any(|m| m == member));
+            let in_all = zsets[1..]
+                .iter()
+                .all(|zset| zset.iter().any(|m| m == member));
             if in_all {
                 count += 1;
                 if limit > 0 && count >= limit {
@@ -1484,7 +1732,9 @@ pub async fn cmd_zmpop(args: &[RespValue], store: &SharedStore, client: &ClientS
     let mut had_count = false;
     let mut i = 2 + numkeys;
     while i < args.len() {
-        let opt = arg_to_string(&args[i]).map(|s| s.to_uppercase()).unwrap_or_default();
+        let opt = arg_to_string(&args[i])
+            .map(|s| s.to_uppercase())
+            .unwrap_or_default();
         if opt == "COUNT" {
             if had_count {
                 return RespValue::error("ERR syntax error");
@@ -1494,8 +1744,14 @@ pub async fn cmd_zmpop(args: &[RespValue], store: &SharedStore, client: &ClientS
             }
             match arg_to_i64(&args[i + 1]) {
                 Some(n) if n > 0 => count = n as usize,
-                Some(0) => return RespValue::error("ERR count value of ZMPOP is not allowed to be zero"),
-                _ => return RespValue::error("ERR count value of ZMPOP command is not an integer or out of range"),
+                Some(0) => {
+                    return RespValue::error("ERR count value of ZMPOP is not allowed to be zero");
+                }
+                _ => {
+                    return RespValue::error(
+                        "ERR count value of ZMPOP command is not an integer or out of range",
+                    );
+                }
             }
             had_count = true;
             i += 2;
@@ -1514,7 +1770,8 @@ pub async fn cmd_zmpop(args: &[RespValue], store: &SharedStore, client: &ClientS
             None => continue,
         };
 
-        let is_zset = matches!(db.get(&key), Some(e) if matches!(&e.value, RedisValue::SortedSet(_)));
+        let is_zset =
+            matches!(db.get(&key), Some(e) if matches!(&e.value, RedisValue::SortedSet(_)));
         if !is_zset {
             if db.get(&key).is_some() {
                 return wrong_type_error();
@@ -1523,31 +1780,38 @@ pub async fn cmd_zmpop(args: &[RespValue], store: &SharedStore, client: &ClientS
         }
 
         let is_empty = matches!(db.get(&key), Some(e) if matches!(&e.value, RedisValue::SortedSet(z) if z.is_empty()));
-        if is_empty { continue; }
+        if is_empty {
+            continue;
+        }
 
         let mut elements = Vec::new();
-        if let Some(entry) = db.get_mut(&key) {
-            if let RedisValue::SortedSet(zset) = &mut entry.value {
-                for _ in 0..count {
-                    let popped = if pop_min { zset.pop_min() } else { zset.pop_max() };
-                    match popped {
-                        Some((member, score)) => {
-                            elements.push(RespValue::Array(Some(vec![
-                                RespValue::bulk_string(member),
-                                RespValue::bulk_string(format!("{score}").into_bytes()),
-                            ])));
-                        }
-                        None => break,
+        if let Some(entry) = db.get_mut(&key)
+            && let RedisValue::SortedSet(zset) = &mut entry.value
+        {
+            for _ in 0..count {
+                let popped = if pop_min {
+                    zset.pop_min()
+                } else {
+                    zset.pop_max()
+                };
+                match popped {
+                    Some((member, score)) => {
+                        elements.push(RespValue::Array(Some(vec![
+                            RespValue::bulk_string(member),
+                            RespValue::bulk_string(format!("{score}").into_bytes()),
+                        ])));
                     }
+                    None => break,
                 }
             }
         }
 
         // Auto-delete empty key
-        if let Some(entry) = db.get(&key) {
-            if let RedisValue::SortedSet(z) = &entry.value {
-                if z.is_empty() { db.del(&key); }
-            }
+        if let Some(entry) = db.get(&key)
+            && let RedisValue::SortedSet(z) = &entry.value
+            && z.is_empty()
+        {
+            db.del(&key);
         }
 
         return RespValue::Array(Some(vec![
@@ -1559,7 +1823,11 @@ pub async fn cmd_zmpop(args: &[RespValue], store: &SharedStore, client: &ClientS
     RespValue::null_array()
 }
 
-pub async fn cmd_zrandmember(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zrandmember(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() || args.len() > 3 {
         return wrong_arg_count("zrandmember");
     }
@@ -1589,7 +1857,9 @@ pub async fn cmd_zrandmember(args: &[RespValue], store: &SharedStore, client: &C
                 } else {
                     let count = match arg_to_i64(&args[1]) {
                         Some(n) => n,
-                        None => return RespValue::error("ERR value is not an integer or out of range"),
+                        None => {
+                            return RespValue::error("ERR value is not an integer or out of range");
+                        }
                     };
                     let with_scores = args.len() == 3;
                     let allow_dups = count < 0;
@@ -1606,7 +1876,8 @@ pub async fn cmd_zrandmember(args: &[RespValue], store: &SharedStore, client: &C
 
                     use rand::seq::IteratorRandom;
                     let mut rng = rand::thread_rng();
-                    let all_items: Vec<(Vec<u8>, f64)> = zset.iter().map(|(m, s)| (m.to_vec(), s)).collect();
+                    let all_items: Vec<(Vec<u8>, f64)> =
+                        zset.iter().map(|(m, s)| (m.to_vec(), s)).collect();
 
                     if all_items.is_empty() {
                         return RespValue::array(vec![]);
@@ -1624,7 +1895,8 @@ pub async fn cmd_zrandmember(args: &[RespValue], store: &SharedStore, client: &C
                         }
                     } else {
                         let take = abs_count.min(all_items.len());
-                        let indices: Vec<usize> = (0..all_items.len()).choose_multiple(&mut rng, take);
+                        let indices: Vec<usize> =
+                            (0..all_items.len()).choose_multiple(&mut rng, take);
                         for idx in indices {
                             let (m, s) = &all_items[idx];
                             result.push(RespValue::bulk_string(m.clone()));
@@ -1687,7 +1959,11 @@ pub async fn cmd_zscan(args: &[RespValue], store: &SharedStore, client: &ClientS
     }
 }
 
-pub async fn cmd_zpopmin(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zpopmin(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("zpopmin");
     }
@@ -1717,31 +1993,36 @@ pub async fn cmd_zpopmin(args: &[RespValue], store: &SharedStore, client: &Clien
     }
 
     let mut result = Vec::new();
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::SortedSet(zset) = &mut entry.value {
-            for _ in 0..count {
-                match zset.pop_min() {
-                    Some((member, score)) => {
-                        result.push(RespValue::bulk_string(member));
-                        result.push(RespValue::bulk_string(format!("{score}").into_bytes()));
-                    }
-                    None => break,
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::SortedSet(zset) = &mut entry.value
+    {
+        for _ in 0..count {
+            match zset.pop_min() {
+                Some((member, score)) => {
+                    result.push(RespValue::bulk_string(member));
+                    result.push(RespValue::bulk_string(format!("{score}").into_bytes()));
                 }
+                None => break,
             }
         }
     }
 
     // Auto-delete empty key
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::SortedSet(z) = &entry.value {
-            if z.is_empty() { db.del(&key); }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::SortedSet(z) = &entry.value
+        && z.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::array(result)
 }
 
-pub async fn cmd_zpopmax(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zpopmax(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("zpopmax");
     }
@@ -1771,38 +2052,46 @@ pub async fn cmd_zpopmax(args: &[RespValue], store: &SharedStore, client: &Clien
     }
 
     let mut result = Vec::new();
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::SortedSet(zset) = &mut entry.value {
-            for _ in 0..count {
-                match zset.pop_max() {
-                    Some((member, score)) => {
-                        result.push(RespValue::bulk_string(member));
-                        result.push(RespValue::bulk_string(format!("{score}").into_bytes()));
-                    }
-                    None => break,
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::SortedSet(zset) = &mut entry.value
+    {
+        for _ in 0..count {
+            match zset.pop_max() {
+                Some((member, score)) => {
+                    result.push(RespValue::bulk_string(member));
+                    result.push(RespValue::bulk_string(format!("{score}").into_bytes()));
                 }
+                None => break,
             }
         }
     }
 
     // Auto-delete empty key
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::SortedSet(z) = &entry.value {
-            if z.is_empty() { db.del(&key); }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::SortedSet(z) = &entry.value
+        && z.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::array(result)
 }
 
-pub async fn cmd_zmscore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zmscore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("zmscore");
     }
     let key = match arg_to_string(&args[0]) {
         Some(k) => k,
         None => {
-            let nulls: Vec<RespValue> = args[1..].iter().map(|_| RespValue::null_bulk_string()).collect();
+            let nulls: Vec<RespValue> = args[1..]
+                .iter()
+                .map(|_| RespValue::null_bulk_string())
+                .collect();
             return RespValue::array(nulls);
         }
     };
@@ -1831,13 +2120,20 @@ pub async fn cmd_zmscore(args: &[RespValue], store: &SharedStore, client: &Clien
             _ => wrong_type_error(),
         },
         None => {
-            let nulls: Vec<RespValue> = args[1..].iter().map(|_| RespValue::null_bulk_string()).collect();
+            let nulls: Vec<RespValue> = args[1..]
+                .iter()
+                .map(|_| RespValue::null_bulk_string())
+                .collect();
             RespValue::array(nulls)
         }
     }
 }
 
-pub async fn cmd_zlexcount(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_zlexcount(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("zlexcount");
     }
@@ -1861,7 +2157,8 @@ pub async fn cmd_zlexcount(args: &[RespValue], store: &SharedStore, client: &Cli
     match db.get(&key) {
         Some(entry) => match &entry.value {
             RedisValue::SortedSet(zset) => {
-                let count = zset.iter()
+                let count = zset
+                    .iter()
                     .filter(|(m, _)| lex_in_range(m, &min_bound, &max_bound))
                     .count();
                 RespValue::integer(count as i64)
@@ -1873,23 +2170,35 @@ pub async fn cmd_zlexcount(args: &[RespValue], store: &SharedStore, client: &Cli
 }
 
 /// Try to pop from the first non-empty sorted set. If `pop_min` is true, pops min; otherwise pops max.
-fn try_zpop_from_keys(db: &mut crate::store::Database, keys: &[String], pop_min: bool) -> Option<RespValue> {
+fn try_zpop_from_keys(
+    db: &mut crate::store::Database,
+    keys: &[String],
+    pop_min: bool,
+) -> Option<RespValue> {
     for key in keys {
         let is_zset = matches!(db.get(key), Some(e) if matches!(&e.value, RedisValue::SortedSet(z) if !z.is_empty()));
-        if !is_zset { continue; }
+        if !is_zset {
+            continue;
+        }
 
-        if let Some(entry) = db.get_mut(key) {
-            if let RedisValue::SortedSet(zset) = &mut entry.value {
-                let popped = if pop_min { zset.pop_min() } else { zset.pop_max() };
-                if let Some((member, score)) = popped {
-                    let empty = zset.is_empty();
-                    if empty { db.del(key); }
-                    return Some(RespValue::Array(Some(vec![
-                        RespValue::bulk_string(key.as_bytes().to_vec()),
-                        RespValue::bulk_string(member),
-                        RespValue::bulk_string(format!("{score}").into_bytes()),
-                    ])));
+        if let Some(entry) = db.get_mut(key)
+            && let RedisValue::SortedSet(zset) = &mut entry.value
+        {
+            let popped = if pop_min {
+                zset.pop_min()
+            } else {
+                zset.pop_max()
+            };
+            if let Some((member, score)) = popped {
+                let empty = zset.is_empty();
+                if empty {
+                    db.del(key);
                 }
+                return Some(RespValue::Array(Some(vec![
+                    RespValue::bulk_string(key.as_bytes().to_vec()),
+                    RespValue::bulk_string(member),
+                    RespValue::bulk_string(format!("{score}").into_bytes()),
+                ])));
             }
         }
     }
@@ -1897,12 +2206,19 @@ fn try_zpop_from_keys(db: &mut crate::store::Database, keys: &[String], pop_min:
 }
 
 /// BZPOPMIN key [key ...] timeout — blocking pop min
-pub async fn cmd_bzpopmin(args: &[RespValue], store: &SharedStore, client: &ClientState, key_watcher: &SharedKeyWatcher) -> RespValue {
+pub async fn cmd_bzpopmin(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
+) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("bzpopmin");
     }
     let timeout = match arg_to_f64(&args[args.len() - 1]) {
-        Some(t) if t < 0.0 => return RespValue::error("ERR timeout is not a float or out of range"),
+        Some(t) if t < 0.0 => {
+            return RespValue::error("ERR timeout is not a float or out of range");
+        }
         Some(t) => t,
         None => return RespValue::error("ERR timeout is not a float or out of range"),
     };
@@ -1954,12 +2270,19 @@ pub async fn cmd_bzpopmin(args: &[RespValue], store: &SharedStore, client: &Clie
 }
 
 /// BZPOPMAX key [key ...] timeout — blocking pop max
-pub async fn cmd_bzpopmax(args: &[RespValue], store: &SharedStore, client: &ClientState, key_watcher: &SharedKeyWatcher) -> RespValue {
+pub async fn cmd_bzpopmax(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
+) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("bzpopmax");
     }
     let timeout = match arg_to_f64(&args[args.len() - 1]) {
-        Some(t) if t < 0.0 => return RespValue::error("ERR timeout is not a float or out of range"),
+        Some(t) if t < 0.0 => {
+            return RespValue::error("ERR timeout is not a float or out of range");
+        }
         Some(t) => t,
         None => return RespValue::error("ERR timeout is not a float or out of range"),
     };
@@ -2011,12 +2334,18 @@ pub async fn cmd_bzpopmax(args: &[RespValue], store: &SharedStore, client: &Clie
 }
 
 /// BZMPOP timeout numkeys key [key ...] MIN|MAX [COUNT count]
-pub async fn cmd_bzmpop(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_bzmpop(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 3 {
         return wrong_arg_count("bzmpop");
     }
     let _timeout = match arg_to_f64(&args[0]) {
-        Some(t) if t < 0.0 => return RespValue::error("ERR timeout is not a float or out of range"),
+        Some(t) if t < 0.0 => {
+            return RespValue::error("ERR timeout is not a float or out of range");
+        }
         Some(t) => t,
         None => return RespValue::error("ERR timeout is not a float or out of range"),
     };

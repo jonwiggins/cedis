@@ -1,5 +1,5 @@
-use crate::store::entry::Entry;
 use crate::store::DataStore;
+use crate::store::entry::Entry;
 use crate::types::RedisValue;
 use std::io::{self, Read, Write};
 
@@ -40,7 +40,10 @@ pub fn save(store: &DataStore, path: &str) -> io::Result<()> {
 
         // RESIZEDB
         let total = entries.len();
-        let expires = entries.iter().filter(|(_, e)| e.expires_at.is_some()).count();
+        let expires = entries
+            .iter()
+            .filter(|(_, e)| e.expires_at.is_some())
+            .count();
         file.write_all(&[RDB_OPCODE_RESIZEDB])?;
         write_length(&mut file, total as u64)?;
         write_length(&mut file, expires as u64)?;
@@ -129,8 +132,11 @@ pub fn load(path: &str, num_databases: usize) -> io::Result<DataStore> {
     // Read magic
     let mut magic = [0u8; 5];
     file.read_exact(&mut magic)?;
-    if &magic != RDB_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid RDB magic"));
+    if magic != *RDB_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid RDB magic",
+        ));
     }
 
     // Read version
@@ -331,7 +337,9 @@ fn read_value(r: &mut impl Read, type_byte: u8) -> io::Result<RedisValue> {
     match type_byte {
         RDB_TYPE_STRING => {
             let data = read_string(r)?;
-            Ok(RedisValue::String(crate::types::rstring::RedisString::new(data)))
+            Ok(RedisValue::String(crate::types::rstring::RedisString::new(
+                data,
+            )))
         }
         RDB_TYPE_LIST => {
             let len = read_length(r)?;

@@ -12,7 +12,10 @@ fn get_or_create_set<'a>(
     key: &str,
 ) -> Result<&'a mut RedisSet, RespValue> {
     if !db.exists(key) {
-        db.set(key.to_string(), Entry::new(RedisValue::Set(RedisSet::new())));
+        db.set(
+            key.to_string(),
+            Entry::new(RedisValue::Set(RedisSet::new())),
+        );
     }
     match db.get_mut(key) {
         Some(entry) => match &mut entry.value {
@@ -41,10 +44,10 @@ pub async fn cmd_sadd(args: &[RespValue], store: &SharedStore, client: &ClientSt
 
     let mut added = 0i64;
     for arg in &args[1..] {
-        if let Some(member) = arg_to_bytes(arg) {
-            if set.add(member.to_vec()) {
-                added += 1;
-            }
+        if let Some(member) = arg_to_bytes(arg)
+            && set.add(member.to_vec())
+        {
+            added += 1;
         }
     }
     RespValue::integer(added)
@@ -72,31 +75,34 @@ pub async fn cmd_srem(args: &[RespValue], store: &SharedStore, client: &ClientSt
     }
 
     let mut removed = 0i64;
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::Set(set) = &mut entry.value {
-            for arg in &args[1..] {
-                if let Some(member) = arg_to_bytes(arg) {
-                    if set.remove(member) {
-                        removed += 1;
-                    }
-                }
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::Set(set) = &mut entry.value
+    {
+        for arg in &args[1..] {
+            if let Some(member) = arg_to_bytes(arg)
+                && set.remove(member)
+            {
+                removed += 1;
             }
         }
     }
 
     // Auto-delete key when set becomes empty
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::Set(s) = &entry.value {
-            if s.is_empty() {
-                db.del(&key);
-            }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::Set(s) = &entry.value
+        && s.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::integer(removed)
 }
 
-pub async fn cmd_sismember(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_sismember(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 2 {
         return wrong_arg_count("sismember");
     }
@@ -121,7 +127,11 @@ pub async fn cmd_sismember(args: &[RespValue], store: &SharedStore, client: &Cli
     }
 }
 
-pub async fn cmd_smismember(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_smismember(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("smismember");
     }
@@ -160,7 +170,11 @@ pub async fn cmd_smismember(args: &[RespValue], store: &SharedStore, client: &Cl
     }
 }
 
-pub async fn cmd_smembers(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_smembers(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("smembers");
     }
@@ -271,18 +285,21 @@ pub async fn cmd_spop(args: &[RespValue], store: &SharedStore, client: &ClientSt
     };
 
     // Auto-delete key when set becomes empty
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::Set(s) = &entry.value {
-            if s.is_empty() {
-                db.del(&key);
-            }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::Set(s) = &entry.value
+        && s.is_empty()
+    {
+        db.del(&key);
     }
 
     result
 }
 
-pub async fn cmd_srandmember(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_srandmember(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() || args.len() > 2 {
         return wrong_arg_count("srandmember");
     }
@@ -305,17 +322,17 @@ pub async fn cmd_srandmember(args: &[RespValue], store: &SharedStore, client: &C
                 } else {
                     let count = match arg_to_i64(&args[1]) {
                         Some(n) => n,
-                        None => return RespValue::error("ERR value is not an integer or out of range"),
+                        None => {
+                            return RespValue::error("ERR value is not an integer or out of range");
+                        }
                     };
                     // Protect against OOM with extreme negative counts
                     if count < 0 && (count.unsigned_abs() as usize) >= (i64::MAX as usize) / 2 {
                         return RespValue::error("ERR value is out of range");
                     }
                     let members = set.random_members(count);
-                    let resp: Vec<RespValue> = members
-                        .into_iter()
-                        .map(|m| RespValue::bulk_string(m))
-                        .collect();
+                    let resp: Vec<RespValue> =
+                        members.into_iter().map(RespValue::bulk_string).collect();
                     RespValue::array(resp)
                 }
             }
@@ -332,7 +349,10 @@ pub async fn cmd_srandmember(args: &[RespValue], store: &SharedStore, client: &C
 }
 
 // Helper for set operations
-fn collect_sets(db: &mut crate::store::Database, keys: &[RespValue]) -> Result<Vec<HashSet<Vec<u8>>>, RespValue> {
+fn collect_sets(
+    db: &mut crate::store::Database,
+    keys: &[RespValue],
+) -> Result<Vec<HashSet<Vec<u8>>>, RespValue> {
     let mut sets = Vec::new();
     for arg in keys {
         if let Some(key) = arg_to_string(arg) {
@@ -348,7 +368,11 @@ fn collect_sets(db: &mut crate::store::Database, keys: &[RespValue]) -> Result<V
     Ok(sets)
 }
 
-pub async fn cmd_sunion(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_sunion(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("sunion");
     }
@@ -365,11 +389,15 @@ pub async fn cmd_sunion(args: &[RespValue], store: &SharedStore, client: &Client
         result.extend(set);
     }
 
-    let resp: Vec<RespValue> = result.into_iter().map(|m| RespValue::bulk_string(m)).collect();
+    let resp: Vec<RespValue> = result.into_iter().map(RespValue::bulk_string).collect();
     RespValue::array(resp)
 }
 
-pub async fn cmd_sinter(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_sinter(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("sinter");
     }
@@ -390,7 +418,7 @@ pub async fn cmd_sinter(args: &[RespValue], store: &SharedStore, client: &Client
         result = result.intersection(set).cloned().collect();
     }
 
-    let resp: Vec<RespValue> = result.into_iter().map(|m| RespValue::bulk_string(m)).collect();
+    let resp: Vec<RespValue> = result.into_iter().map(RespValue::bulk_string).collect();
     RespValue::array(resp)
 }
 
@@ -415,7 +443,7 @@ pub async fn cmd_sdiff(args: &[RespValue], store: &SharedStore, client: &ClientS
         result = result.difference(set).cloned().collect();
     }
 
-    let resp: Vec<RespValue> = result.into_iter().map(|m| RespValue::bulk_string(m)).collect();
+    let resp: Vec<RespValue> = result.into_iter().map(RespValue::bulk_string).collect();
     RespValue::array(resp)
 }
 
@@ -461,20 +489,35 @@ async fn set_store_op(
         // When result is empty, delete the destination key (Redis behavior)
         db.del(&dest);
     } else {
-        db.set(dest, Entry::new(RedisValue::Set(RedisSet::from_set(result))));
+        db.set(
+            dest,
+            Entry::new(RedisValue::Set(RedisSet::from_set(result))),
+        );
     }
     RespValue::integer(len)
 }
 
-pub async fn cmd_sunionstore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_sunionstore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     set_store_op(args, store, client, "sunionstore").await
 }
 
-pub async fn cmd_sinterstore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_sinterstore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     set_store_op(args, store, client, "sinterstore").await
 }
 
-pub async fn cmd_sdiffstore(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_sdiffstore(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     set_store_op(args, store, client, "sdiffstore").await
 }
 
@@ -509,10 +552,10 @@ pub async fn cmd_smove(args: &[RespValue], store: &SharedStore, client: &ClientS
     }
 
     // Check destination type (if exists, must be set)
-    if let Some(entry) = db.get(&dst) {
-        if !matches!(&entry.value, RedisValue::Set(_)) {
-            return wrong_type_error();
-        }
+    if let Some(entry) = db.get(&dst)
+        && !matches!(&entry.value, RedisValue::Set(_))
+    {
+        return wrong_type_error();
     }
 
     // Remove from source
@@ -529,12 +572,11 @@ pub async fn cmd_smove(args: &[RespValue], store: &SharedStore, client: &ClientS
     }
 
     // Auto-delete source if empty
-    if let Some(entry) = db.get(&src) {
-        if let RedisValue::Set(s) = &entry.value {
-            if s.is_empty() {
-                db.del(&src);
-            }
-        }
+    if let Some(entry) = db.get(&src)
+        && let RedisValue::Set(s) = &entry.value
+        && s.is_empty()
+    {
+        db.del(&src);
     }
 
     // Add to destination
@@ -567,14 +609,19 @@ pub async fn cmd_sscan(args: &[RespValue], store: &SharedStore, client: &ClientS
     while i < args.len() {
         let opt = match arg_to_string(&args[i]) {
             Some(s) => s.to_uppercase(),
-            None => { i += 1; continue; }
+            None => {
+                i += 1;
+                continue;
+            }
         };
         match opt.as_str() {
             "MATCH" => {
                 i += 1;
-                pattern = args.get(i).and_then(|a| arg_to_string(a));
+                pattern = args.get(i).and_then(arg_to_string);
             }
-            "COUNT" => { i += 1; } // skip count value
+            "COUNT" => {
+                i += 1;
+            } // skip count value
             _ => {}
         }
         i += 1;
@@ -613,7 +660,11 @@ pub async fn cmd_sscan(args: &[RespValue], store: &SharedStore, client: &ClientS
     }
 }
 
-pub async fn cmd_sintercard(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_sintercard(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     // SINTERCARD numkeys key [key ...] [LIMIT limit]
     if args.len() < 2 {
         return wrong_arg_count("sintercard");

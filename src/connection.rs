@@ -1,6 +1,6 @@
 use crate::resp::RespValue;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::broadcast;
 
 static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
@@ -34,6 +34,12 @@ pub struct ClientState {
 
     // Monitor mode
     pub in_monitor: bool,
+}
+
+impl Default for ClientState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ClientState {

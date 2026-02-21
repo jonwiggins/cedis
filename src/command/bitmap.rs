@@ -10,7 +10,10 @@ use crate::types::rstring::RedisString;
 /// Helper: read bytes from a key that is either a String or nonexistent.
 /// Returns Ok(Some(bytes)) if it exists and is a string, Ok(None) if nonexistent,
 /// Err(RespValue) if it is the wrong type.
-fn read_string_bytes(db: &mut crate::store::Database, key: &str) -> Result<Option<Vec<u8>>, RespValue> {
+fn read_string_bytes(
+    db: &mut crate::store::Database,
+    key: &str,
+) -> Result<Option<Vec<u8>>, RespValue> {
     match db.get(key) {
         Some(entry) => match &entry.value {
             RedisValue::String(s) => Ok(Some(s.as_bytes().to_vec())),
@@ -21,7 +24,11 @@ fn read_string_bytes(db: &mut crate::store::Database, key: &str) -> Result<Optio
 }
 
 /// SETBIT key offset value
-pub async fn cmd_setbit(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_setbit(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 3 {
         return wrong_arg_count("setbit");
     }
@@ -32,7 +39,7 @@ pub async fn cmd_setbit(args: &[RespValue], store: &SharedStore, client: &Client
     // Max bit offset: 512MB * 8 = 4294967296 (2^32)
     const MAX_BIT_OFFSET: i64 = 512_i64 * 1024 * 1024 * 8;
     let offset = match arg_to_i64(&args[1]) {
-        Some(o) if o >= 0 && o < MAX_BIT_OFFSET => o as usize,
+        Some(o) if (0..MAX_BIT_OFFSET).contains(&o) => o as usize,
         _ => return RespValue::error("ERR bit offset is not an integer or out of range"),
     };
     let value = match arg_to_i64(&args[2]) {
@@ -63,7 +70,10 @@ pub async fn cmd_setbit(args: &[RespValue], store: &SharedStore, client: &Client
     let is_dirty = old != value || old_len != new_len || is_new_key;
 
     // Write back as a String value
-    db.set(key, Entry::new(RedisValue::String(RedisString::new(bm.as_bytes().to_vec()))));
+    db.set(
+        key,
+        Entry::new(RedisValue::String(RedisString::new(bm.as_bytes().to_vec()))),
+    );
 
     // Track dirty: increment when value changed, length changed, or key is new
     if is_dirty {
@@ -74,7 +84,11 @@ pub async fn cmd_setbit(args: &[RespValue], store: &SharedStore, client: &Client
 }
 
 /// GETBIT key offset
-pub async fn cmd_getbit(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_getbit(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() != 2 {
         return wrong_arg_count("getbit");
     }
@@ -101,7 +115,11 @@ pub async fn cmd_getbit(args: &[RespValue], store: &SharedStore, client: &Client
 }
 
 /// BITCOUNT key [start end [BYTE|BIT]]
-pub async fn cmd_bitcount(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_bitcount(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("bitcount");
     }
@@ -180,9 +198,15 @@ pub async fn cmd_bitop(args: &[RespValue], store: &SharedStore, client: &ClientS
     }
     // DIFF, DIFF1, ANDOR require at least two source keys
     if matches!(operation.as_str(), "DIFF" | "DIFF1" | "ANDOR") && args.len() < 4 {
-        return RespValue::error(&format!("ERR BITOP {} requires at least two keys", operation));
+        return RespValue::error(format!(
+            "ERR BITOP {} requires at least two keys",
+            operation
+        ));
     }
-    if !matches!(operation.as_str(), "AND" | "OR" | "XOR" | "NOT" | "ONE" | "DIFF" | "DIFF1" | "ANDOR") {
+    if !matches!(
+        operation.as_str(),
+        "AND" | "OR" | "XOR" | "NOT" | "ONE" | "DIFF" | "DIFF1" | "ANDOR"
+    ) {
         return RespValue::error("ERR syntax error");
     }
 
@@ -237,14 +261,20 @@ pub async fn cmd_bitop(args: &[RespValue], store: &SharedStore, client: &ClientS
     let result_len = result.byte_len() as i64;
     db.set(
         destkey,
-        Entry::new(RedisValue::String(RedisString::new(result.as_bytes().to_vec()))),
+        Entry::new(RedisValue::String(RedisString::new(
+            result.as_bytes().to_vec(),
+        ))),
     );
 
     RespValue::integer(result_len)
 }
 
 /// BITPOS key bit [start [end [BYTE|BIT]]]
-pub async fn cmd_bitpos(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_bitpos(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 2 || args.len() > 5 {
         return wrong_arg_count("bitpos");
     }
@@ -320,10 +350,10 @@ pub async fn cmd_bitpos(args: &[RespValue], store: &SharedStore, client: &Client
 /// Returns (signed, bits) or None on error.
 fn parse_bitfield_type(s: &str) -> Option<(bool, u32)> {
     let s = s.to_lowercase();
-    let (signed, rest) = if s.starts_with('i') {
-        (true, &s[1..])
-    } else if s.starts_with('u') {
-        (false, &s[1..])
+    let (signed, rest) = if let Some(rest) = s.strip_prefix('i') {
+        (true, rest)
+    } else if let Some(rest) = s.strip_prefix('u') {
+        (false, rest)
     } else {
         return None;
     };
@@ -398,12 +428,9 @@ fn to_signed(value: u64, bits: u32) -> i64 {
 }
 
 /// Wrap a value to fit in the given number of bits (signed or unsigned).
-fn wrap_value(value: i64, signed: bool, bits: u32) -> u64 {
+fn wrap_value(value: i64, _signed: bool, bits: u32) -> u64 {
     if bits == 64 {
         value as u64
-    } else if signed {
-        let mask = (1u64 << bits) - 1;
-        (value as u64) & mask
     } else {
         let mask = (1u64 << bits) - 1;
         (value as u64) & mask
@@ -413,11 +440,23 @@ fn wrap_value(value: i64, signed: bool, bits: u32) -> u64 {
 /// Get the min/max range for a bitfield type as i128 values.
 fn bitfield_range(signed: bool, bits: u32) -> (i128, i128) {
     if signed {
-        let min = if bits == 64 { i64::MIN as i128 } else { -(1i128 << (bits - 1)) };
-        let max = if bits == 64 { i64::MAX as i128 } else { (1i128 << (bits - 1)) - 1 };
+        let min = if bits == 64 {
+            i64::MIN as i128
+        } else {
+            -(1i128 << (bits - 1))
+        };
+        let max = if bits == 64 {
+            i64::MAX as i128
+        } else {
+            (1i128 << (bits - 1)) - 1
+        };
         (min, max)
     } else {
-        let max = if bits >= 64 { u64::MAX as i128 } else { (1i128 << bits) - 1 };
+        let max = if bits >= 64 {
+            u64::MAX as i128
+        } else {
+            (1i128 << bits) - 1
+        };
         (0, max)
     }
 }
@@ -425,19 +464,38 @@ fn bitfield_range(signed: bool, bits: u32) -> (i128, i128) {
 /// Saturate a value to fit in the given number of bits.
 fn saturate_value(value: i64, signed: bool, bits: u32) -> u64 {
     if signed {
-        let min = if bits == 64 { i64::MIN } else { -(1i64 << (bits - 1)) };
-        let max = if bits == 64 { i64::MAX } else { (1i64 << (bits - 1)) - 1 };
+        let min = if bits == 64 {
+            i64::MIN
+        } else {
+            -(1i64 << (bits - 1))
+        };
+        let max = if bits == 64 {
+            i64::MAX
+        } else {
+            (1i64 << (bits - 1)) - 1
+        };
         let clamped = value.max(min).min(max);
         wrap_value(clamped, true, bits)
     } else {
-        let max = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
-        let clamped = if value < 0 { 0u64 } else { (value as u64).min(max) };
-        clamped
+        let max = if bits >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << bits) - 1
+        };
+        if value < 0 {
+            0u64
+        } else {
+            (value as u64).min(max)
+        }
     }
 }
 
 /// BITFIELD key [GET type offset | SET type offset value | INCRBY type offset increment | OVERFLOW WRAP|SAT|FAIL] ...
-pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_bitfield(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("bitfield");
     }
@@ -448,13 +506,31 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
 
     // Parse operations
     enum Op {
-        Get { signed: bool, bits: u32, offset: u64 },
-        Set { signed: bool, bits: u32, offset: u64, value: i64 },
-        IncrBy { signed: bool, bits: u32, offset: u64, increment: i64 },
+        Get {
+            signed: bool,
+            bits: u32,
+            offset: u64,
+        },
+        Set {
+            signed: bool,
+            bits: u32,
+            offset: u64,
+            value: i64,
+        },
+        IncrBy {
+            signed: bool,
+            bits: u32,
+            offset: u64,
+            increment: i64,
+        },
     }
 
     #[derive(Clone, Copy)]
-    enum Overflow { Wrap, Sat, Fail }
+    enum Overflow {
+        Wrap,
+        Sat,
+        Fail,
+    }
 
     let mut ops: Vec<(Op, Overflow)> = Vec::new();
     let mut overflow = Overflow::Wrap;
@@ -477,7 +553,11 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                 };
                 let (signed, bits) = match parse_bitfield_type(&type_str) {
                     Some(t) => t,
-                    None => return RespValue::error("ERR Invalid bitfield type. Use something like i16 u8. Note that u64 is not supported but i64 is"),
+                    None => {
+                        return RespValue::error(
+                            "ERR Invalid bitfield type. Use something like i16 u8. Note that u64 is not supported but i64 is",
+                        );
+                    }
                 };
                 let offset_str = match arg_to_string(&args[i + 2]) {
                     Some(s) => s,
@@ -485,9 +565,20 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                 };
                 let offset = match parse_bitfield_offset(&offset_str, bits) {
                     Some(o) => o,
-                    None => return RespValue::error("ERR bit offset is not an integer or out of range"),
+                    None => {
+                        return RespValue::error(
+                            "ERR bit offset is not an integer or out of range",
+                        );
+                    }
                 };
-                ops.push((Op::Get { signed, bits, offset }, overflow));
+                ops.push((
+                    Op::Get {
+                        signed,
+                        bits,
+                        offset,
+                    },
+                    overflow,
+                ));
                 i += 3;
             }
             "SET" => {
@@ -500,7 +591,11 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                 };
                 let (signed, bits) = match parse_bitfield_type(&type_str) {
                     Some(t) => t,
-                    None => return RespValue::error("ERR Invalid bitfield type. Use something like i16 u8. Note that u64 is not supported but i64 is"),
+                    None => {
+                        return RespValue::error(
+                            "ERR Invalid bitfield type. Use something like i16 u8. Note that u64 is not supported but i64 is",
+                        );
+                    }
                 };
                 let offset_str = match arg_to_string(&args[i + 2]) {
                     Some(s) => s,
@@ -508,13 +603,25 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                 };
                 let offset = match parse_bitfield_offset(&offset_str, bits) {
                     Some(o) => o,
-                    None => return RespValue::error("ERR bit offset is not an integer or out of range"),
+                    None => {
+                        return RespValue::error(
+                            "ERR bit offset is not an integer or out of range",
+                        );
+                    }
                 };
                 let value = match arg_to_i64(&args[i + 3]) {
                     Some(v) => v,
                     None => return RespValue::error("ERR value is not an integer or out of range"),
                 };
-                ops.push((Op::Set { signed, bits, offset, value }, overflow));
+                ops.push((
+                    Op::Set {
+                        signed,
+                        bits,
+                        offset,
+                        value,
+                    },
+                    overflow,
+                ));
                 has_writes = true;
                 i += 4;
             }
@@ -528,7 +635,11 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                 };
                 let (signed, bits) = match parse_bitfield_type(&type_str) {
                     Some(t) => t,
-                    None => return RespValue::error("ERR Invalid bitfield type. Use something like i16 u8. Note that u64 is not supported but i64 is"),
+                    None => {
+                        return RespValue::error(
+                            "ERR Invalid bitfield type. Use something like i16 u8. Note that u64 is not supported but i64 is",
+                        );
+                    }
                 };
                 let offset_str = match arg_to_string(&args[i + 2]) {
                     Some(s) => s,
@@ -536,13 +647,25 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                 };
                 let offset = match parse_bitfield_offset(&offset_str, bits) {
                     Some(o) => o,
-                    None => return RespValue::error("ERR bit offset is not an integer or out of range"),
+                    None => {
+                        return RespValue::error(
+                            "ERR bit offset is not an integer or out of range",
+                        );
+                    }
                 };
                 let increment = match arg_to_i64(&args[i + 3]) {
                     Some(v) => v,
                     None => return RespValue::error("ERR value is not an integer or out of range"),
                 };
-                ops.push((Op::IncrBy { signed, bits, offset, increment }, overflow));
+                ops.push((
+                    Op::IncrBy {
+                        signed,
+                        bits,
+                        offset,
+                        increment,
+                    },
+                    overflow,
+                ));
                 has_writes = true;
                 i += 4;
             }
@@ -558,7 +681,11 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                     "WRAP" => Overflow::Wrap,
                     "SAT" => Overflow::Sat,
                     "FAIL" => Overflow::Fail,
-                    _ => return RespValue::error("ERR Invalid OVERFLOW type (should be one of WRAP, SAT, FAIL)"),
+                    _ => {
+                        return RespValue::error(
+                            "ERR Invalid OVERFLOW type (should be one of WRAP, SAT, FAIL)",
+                        );
+                    }
                 };
                 i += 2;
             }
@@ -582,14 +709,31 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
 
     for (op, ov) in &ops {
         match op {
-            Op::Get { signed, bits, offset } => {
+            Op::Get {
+                signed,
+                bits,
+                offset,
+            } => {
                 let raw = read_bits(&data, *offset, *bits);
-                let val = if *signed { to_signed(raw, *bits) } else { raw as i64 };
+                let val = if *signed {
+                    to_signed(raw, *bits)
+                } else {
+                    raw as i64
+                };
                 results.push(RespValue::integer(val));
             }
-            Op::Set { signed, bits, offset, value } => {
+            Op::Set {
+                signed,
+                bits,
+                offset,
+                value,
+            } => {
                 let old_raw = read_bits(&data, *offset, *bits);
-                let old_val = if *signed { to_signed(old_raw, *bits) } else { old_raw as i64 };
+                let old_val = if *signed {
+                    to_signed(old_raw, *bits)
+                } else {
+                    old_raw as i64
+                };
 
                 match ov {
                     Overflow::Fail => {
@@ -624,9 +768,18 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                     }
                 }
             }
-            Op::IncrBy { signed, bits, offset, increment } => {
+            Op::IncrBy {
+                signed,
+                bits,
+                offset,
+                increment,
+            } => {
                 let old_raw = read_bits(&data, *offset, *bits);
-                let old_val = if *signed { to_signed(old_raw, *bits) } else { old_raw as i64 };
+                let old_val = if *signed {
+                    to_signed(old_raw, *bits)
+                } else {
+                    old_raw as i64
+                };
                 // Use i128 for overflow-safe arithmetic
                 let sum = (old_val as i128) + (*increment as i128);
 
@@ -635,7 +788,11 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                         let new_val = old_val.wrapping_add(*increment);
                         let wrapped = wrap_value(new_val, *signed, *bits);
                         write_bits(&mut data, *offset, *bits, wrapped);
-                        let result_val = if *signed { to_signed(wrapped, *bits) } else { wrapped as i64 };
+                        let result_val = if *signed {
+                            to_signed(wrapped, *bits)
+                        } else {
+                            wrapped as i64
+                        };
                         results.push(RespValue::integer(result_val));
                         dirty += 1;
                     }
@@ -648,7 +805,11 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                             clamped as u64
                         };
                         write_bits(&mut data, *offset, *bits, sat);
-                        let result_val = if *signed { to_signed(sat, *bits) } else { sat as i64 };
+                        let result_val = if *signed {
+                            to_signed(sat, *bits)
+                        } else {
+                            sat as i64
+                        };
                         results.push(RespValue::integer(result_val));
                         dirty += 1;
                     }
@@ -660,7 +821,11 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
                         } else {
                             let wrapped = wrap_value(sum as i64, *signed, *bits);
                             write_bits(&mut data, *offset, *bits, wrapped);
-                            let result_val = if *signed { to_signed(wrapped, *bits) } else { wrapped as i64 };
+                            let result_val = if *signed {
+                                to_signed(wrapped, *bits)
+                            } else {
+                                wrapped as i64
+                            };
                             results.push(RespValue::integer(result_val));
                             dirty += 1;
                         }
@@ -682,7 +847,11 @@ pub async fn cmd_bitfield(args: &[RespValue], store: &SharedStore, client: &Clie
 }
 
 /// BITFIELD_RO key [GET type offset] ...
-pub async fn cmd_bitfield_ro(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_bitfield_ro(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("bitfield_ro");
     }
@@ -695,7 +864,11 @@ pub async fn cmd_bitfield_ro(args: &[RespValue], store: &SharedStore, client: &C
     let mut i = 1;
 
     // Parse and validate all GET operations first
-    struct GetOp { signed: bool, bits: u32, offset: u64 }
+    struct GetOp {
+        signed: bool,
+        bits: u32,
+        offset: u64,
+    }
     let mut ops: Vec<GetOp> = Vec::new();
 
     while i < args.len() {
@@ -714,7 +887,11 @@ pub async fn cmd_bitfield_ro(args: &[RespValue], store: &SharedStore, client: &C
                 };
                 let (signed, bits) = match parse_bitfield_type(&type_str) {
                     Some(t) => t,
-                    None => return RespValue::error("ERR Invalid bitfield type. Use something like i16 u8. Note that u64 is not supported but i64 is"),
+                    None => {
+                        return RespValue::error(
+                            "ERR Invalid bitfield type. Use something like i16 u8. Note that u64 is not supported but i64 is",
+                        );
+                    }
                 };
                 let offset_str = match arg_to_string(&args[i + 2]) {
                     Some(s) => s,
@@ -722,9 +899,17 @@ pub async fn cmd_bitfield_ro(args: &[RespValue], store: &SharedStore, client: &C
                 };
                 let offset = match parse_bitfield_offset(&offset_str, bits) {
                     Some(o) => o,
-                    None => return RespValue::error("ERR bit offset is not an integer or out of range"),
+                    None => {
+                        return RespValue::error(
+                            "ERR bit offset is not an integer or out of range",
+                        );
+                    }
                 };
-                ops.push(GetOp { signed, bits, offset });
+                ops.push(GetOp {
+                    signed,
+                    bits,
+                    offset,
+                });
                 i += 3;
             }
             _ => return RespValue::error("ERR BITFIELD_RO only supports the GET subcommand"),
@@ -742,7 +927,11 @@ pub async fn cmd_bitfield_ro(args: &[RespValue], store: &SharedStore, client: &C
 
     for op in &ops {
         let raw = read_bits(&data, op.offset, op.bits);
-        let val = if op.signed { to_signed(raw, op.bits) } else { raw as i64 };
+        let val = if op.signed {
+            to_signed(raw, op.bits)
+        } else {
+            raw as i64
+        };
         results.push(RespValue::integer(val));
     }
 

@@ -1,4 +1,6 @@
-use crate::command::{arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error};
+use crate::command::{
+    arg_to_bytes, arg_to_f64, arg_to_i64, arg_to_string, wrong_arg_count, wrong_type_error,
+};
 use crate::connection::ClientState;
 use crate::resp::RespValue;
 use crate::store::SharedStore;
@@ -23,12 +25,8 @@ fn get_or_create_hash<'a>(
     }
 }
 
-pub async fn cmd_hset(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
-    if args.len() < 3 || args.len() % 2 == 0 {
+pub async fn cmd_hset(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    if args.len() < 3 || args.len().is_multiple_of(2) {
         return wrong_arg_count("hset");
     }
     let key = match arg_to_string(&args[0]) {
@@ -62,12 +60,8 @@ pub async fn cmd_hset(
     RespValue::integer(new_fields)
 }
 
-pub async fn cmd_hmset(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
-    if args.len() < 3 || args.len() % 2 == 0 {
+pub async fn cmd_hmset(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+    if args.len() < 3 || args.len().is_multiple_of(2) {
         return wrong_arg_count("hmset");
     }
     let key = match arg_to_string(&args[0]) {
@@ -98,11 +92,7 @@ pub async fn cmd_hmset(
     RespValue::ok()
 }
 
-pub async fn cmd_hget(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_hget(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 2 {
         return wrong_arg_count("hget");
     }
@@ -130,11 +120,7 @@ pub async fn cmd_hget(
     }
 }
 
-pub async fn cmd_hdel(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_hdel(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("hdel");
     }
@@ -146,7 +132,8 @@ pub async fn cmd_hdel(
     let mut store = store.write().await;
     let db = store.db(client.db_index);
 
-    let is_hash = matches!(db.get(&key), Some(entry) if matches!(&entry.value, RedisValue::Hash(_)));
+    let is_hash =
+        matches!(db.get(&key), Some(entry) if matches!(&entry.value, RedisValue::Hash(_)));
     if !is_hash {
         return match db.get(&key) {
             Some(_) => wrong_type_error(),
@@ -155,25 +142,24 @@ pub async fn cmd_hdel(
     }
 
     let mut count = 0i64;
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::Hash(h) = &mut entry.value {
-            for arg in &args[1..] {
-                if let Some(field) = arg_to_string(arg) {
-                    if h.del(&field) {
-                        count += 1;
-                    }
-                }
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::Hash(h) = &mut entry.value
+    {
+        for arg in &args[1..] {
+            if let Some(field) = arg_to_string(arg)
+                && h.del(&field)
+            {
+                count += 1;
             }
         }
     }
 
     // Auto-delete key when hash becomes empty
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::Hash(h) = &entry.value {
-            if h.len() == 0 {
-                db.del(&key);
-            }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::Hash(h) = &entry.value
+        && h.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::integer(count)
@@ -208,11 +194,7 @@ pub async fn cmd_hexists(
     }
 }
 
-pub async fn cmd_hlen(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_hlen(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("hlen");
     }
@@ -233,11 +215,7 @@ pub async fn cmd_hlen(
     }
 }
 
-pub async fn cmd_hkeys(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_hkeys(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("hkeys");
     }
@@ -265,11 +243,7 @@ pub async fn cmd_hkeys(
     }
 }
 
-pub async fn cmd_hvals(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_hvals(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() != 1 {
         return wrong_arg_count("hvals");
     }
@@ -329,18 +303,17 @@ pub async fn cmd_hgetall(
     }
 }
 
-pub async fn cmd_hmget(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_hmget(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("hmget");
     }
     let key = match arg_to_string(&args[0]) {
         Some(k) => k,
         None => {
-            let nulls: Vec<RespValue> = args[1..].iter().map(|_| RespValue::null_bulk_string()).collect();
+            let nulls: Vec<RespValue> = args[1..]
+                .iter()
+                .map(|_| RespValue::null_bulk_string())
+                .collect();
             return RespValue::array(nulls);
         }
     };
@@ -367,7 +340,10 @@ pub async fn cmd_hmget(
             _ => wrong_type_error(),
         },
         None => {
-            let nulls: Vec<RespValue> = args[1..].iter().map(|_| RespValue::null_bulk_string()).collect();
+            let nulls: Vec<RespValue> = args[1..]
+                .iter()
+                .map(|_| RespValue::null_bulk_string())
+                .collect();
             RespValue::array(nulls)
         }
     }
@@ -527,20 +503,27 @@ pub async fn cmd_hgetdel(
     // args[1] should be "FIELDS"
     match arg_to_string(&args[1]).map(|s| s.to_uppercase()) {
         Some(ref s) if s == "FIELDS" => {}
-        _ => return RespValue::error("ERR Mandatory argument FIELDS is missing or not at the right position"),
+        _ => {
+            return RespValue::error(
+                "ERR Mandatory argument FIELDS is missing or not at the right position",
+            );
+        }
     }
     let numfields = match arg_to_i64(&args[2]) {
         Some(n) if n > 0 => n as usize,
         _ => return RespValue::error("ERR Number of fields must be a positive integer"),
     };
     if args.len() != 3 + numfields {
-        return RespValue::error("ERR The `numfields` parameter must match the number of arguments");
+        return RespValue::error(
+            "ERR The `numfields` parameter must match the number of arguments",
+        );
     }
 
     let mut store = store.write().await;
     let db = store.db(client.db_index);
 
-    let is_hash = matches!(db.get(&key), Some(entry) if matches!(&entry.value, RedisValue::Hash(_)));
+    let is_hash =
+        matches!(db.get(&key), Some(entry) if matches!(&entry.value, RedisValue::Hash(_)));
     if !is_hash {
         return match db.get(&key) {
             Some(entry) => match &entry.value {
@@ -548,39 +531,41 @@ pub async fn cmd_hgetdel(
                 _ => wrong_type_error(),
             },
             None => {
-                let results: Vec<RespValue> = args[3..].iter().map(|_| RespValue::null_bulk_string()).collect();
+                let results: Vec<RespValue> = args[3..]
+                    .iter()
+                    .map(|_| RespValue::null_bulk_string())
+                    .collect();
                 RespValue::array(results)
             }
         };
     }
 
     let mut results = Vec::new();
-    if let Some(entry) = db.get_mut(&key) {
-        if let RedisValue::Hash(h) = &mut entry.value {
-            for arg in &args[3..] {
-                if let Some(field) = arg_to_string(arg) {
-                    match h.get(&field) {
-                        Some(v) => {
-                            let val = v.clone();
-                            h.del(&field);
-                            results.push(RespValue::bulk_string(val));
-                        }
-                        None => results.push(RespValue::null_bulk_string()),
+    if let Some(entry) = db.get_mut(&key)
+        && let RedisValue::Hash(h) = &mut entry.value
+    {
+        for arg in &args[3..] {
+            if let Some(field) = arg_to_string(arg) {
+                match h.get(&field) {
+                    Some(v) => {
+                        let val = v.clone();
+                        h.del(&field);
+                        results.push(RespValue::bulk_string(val));
                     }
-                } else {
-                    results.push(RespValue::null_bulk_string());
+                    None => results.push(RespValue::null_bulk_string()),
                 }
+            } else {
+                results.push(RespValue::null_bulk_string());
             }
         }
     }
 
     // Auto-delete key when hash becomes empty
-    if let Some(entry) = db.get(&key) {
-        if let RedisValue::Hash(h) = &entry.value {
-            if h.len() == 0 {
-                db.del(&key);
-            }
-        }
+    if let Some(entry) = db.get(&key)
+        && let RedisValue::Hash(h) = &entry.value
+        && h.is_empty()
+    {
+        db.del(&key);
     }
 
     RespValue::array(results)
@@ -616,7 +601,9 @@ pub async fn cmd_hrandfield(
                 } else {
                     let count = match arg_to_i64(&args[1]) {
                         Some(n) => n,
-                        None => return RespValue::error("ERR value is not an integer or out of range"),
+                        None => {
+                            return RespValue::error("ERR value is not an integer or out of range");
+                        }
                     };
                     let with_values = args.len() == 3;
                     let allow_dups = count < 0;
@@ -634,7 +621,11 @@ pub async fn cmd_hrandfield(
 
                     use rand::seq::IteratorRandom;
                     let mut rng = rand::thread_rng();
-                    let all_entries: Vec<(String, Vec<u8>)> = h.entries().into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    let all_entries: Vec<(String, Vec<u8>)> = h
+                        .entries()
+                        .into_iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
 
                     if all_entries.is_empty() {
                         return RespValue::array(vec![]);
@@ -654,7 +645,8 @@ pub async fn cmd_hrandfield(
                     } else {
                         // Positive count: unique elements, at most count
                         let take = abs_count.min(all_entries.len());
-                        let indices: Vec<usize> = (0..all_entries.len()).choose_multiple(&mut rng, take);
+                        let indices: Vec<usize> =
+                            (0..all_entries.len()).choose_multiple(&mut rng, take);
                         for idx in indices {
                             let (k, v) = &all_entries[idx];
                             result.push(RespValue::bulk_string(k.as_bytes().to_vec()));
@@ -679,11 +671,7 @@ pub async fn cmd_hrandfield(
     }
 }
 
-pub async fn cmd_hscan(
-    args: &[RespValue],
-    store: &SharedStore,
-    client: &ClientState,
-) -> RespValue {
+pub async fn cmd_hscan(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("hscan");
     }
@@ -704,15 +692,22 @@ pub async fn cmd_hscan(
     while i < args.len() {
         let opt = match arg_to_string(&args[i]) {
             Some(s) => s.to_uppercase(),
-            None => { i += 1; continue; }
+            None => {
+                i += 1;
+                continue;
+            }
         };
         match opt.as_str() {
             "MATCH" => {
                 i += 1;
-                pattern = args.get(i).and_then(|a| arg_to_string(a));
+                pattern = args.get(i).and_then(arg_to_string);
             }
-            "COUNT" => { i += 1; } // skip count value
-            "NOVALUES" => { novalues = true; }
+            "COUNT" => {
+                i += 1;
+            } // skip count value
+            "NOVALUES" => {
+                novalues = true;
+            }
             _ => {}
         }
         i += 1;
@@ -726,10 +721,10 @@ pub async fn cmd_hscan(
             RedisValue::Hash(h) => {
                 let mut result = Vec::new();
                 for (field, value) in h.entries() {
-                    if let Some(ref pat) = pattern {
-                        if !crate::glob::glob_match(pat, field) {
-                            continue;
-                        }
+                    if let Some(ref pat) = pattern
+                        && !crate::glob::glob_match(pat, field)
+                    {
+                        continue;
                     }
                     result.push(RespValue::bulk_string(field.as_bytes().to_vec()));
                     if !novalues {

@@ -19,12 +19,19 @@ pub enum FsyncPolicy {
 }
 
 impl FsyncPolicy {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "always" => FsyncPolicy::Always,
             "everysec" => FsyncPolicy::Everysec,
             _ => FsyncPolicy::No,
         }
+    }
+}
+
+impl Default for AofWriter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -205,9 +212,7 @@ pub fn rewrite(store: &DataStore, path: &str) -> io::Result<()> {
                             RespValue::bulk_string(key.as_bytes().to_vec()),
                         ];
                         for (member, score) in items {
-                            cmd_parts.push(RespValue::bulk_string(
-                                score.to_string().into_bytes(),
-                            ));
+                            cmd_parts.push(RespValue::bulk_string(score.to_string().into_bytes()));
                             cmd_parts.push(RespValue::bulk_string(member.to_vec()));
                         }
                         file.write_all(&RespValue::array(cmd_parts).serialize())?;
@@ -255,18 +260,18 @@ fn apply_command(
 
     match cmd {
         "SELECT" => {
-            if let Some(db) = arg_str(0).and_then(|s| s.parse::<usize>().ok()) {
-                if db < num_databases {
-                    *current_db = db;
-                }
+            if let Some(db) = arg_str(0).and_then(|s| s.parse::<usize>().ok())
+                && db < num_databases
+            {
+                *current_db = db;
             }
         }
         "SET" => {
             if let (Some(key), Some(val)) = (arg_str(0), arg_bytes(1)) {
                 let db = store.db(*current_db);
-                let entry = crate::store::entry::Entry::new(
-                    RedisValue::String(crate::types::rstring::RedisString::new(val)),
-                );
+                let entry = crate::store::entry::Entry::new(RedisValue::String(
+                    crate::types::rstring::RedisString::new(val),
+                ));
                 db.set(key, entry);
             }
         }
@@ -288,15 +293,15 @@ fn apply_command(
                         )),
                     );
                 }
-                if let Some(entry) = db.get_mut(&key) {
-                    if let RedisValue::List(list) = &mut entry.value {
-                        for arg in &args[1..] {
-                            if let Some(v) = arg.as_str() {
-                                if cmd == "RPUSH" {
-                                    list.rpush(v.to_vec());
-                                } else {
-                                    list.lpush(v.to_vec());
-                                }
+                if let Some(entry) = db.get_mut(&key)
+                    && let RedisValue::List(list) = &mut entry.value
+                {
+                    for arg in &args[1..] {
+                        if let Some(v) = arg.as_str() {
+                            if cmd == "RPUSH" {
+                                list.rpush(v.to_vec());
+                            } else {
+                                list.lpush(v.to_vec());
                             }
                         }
                     }
@@ -314,14 +319,15 @@ fn apply_command(
                         )),
                     );
                 }
-                if let Some(entry) = db.get_mut(&key) {
-                    if let RedisValue::Hash(hash) = &mut entry.value {
-                        for pair in args[1..].chunks(2) {
-                            if let (Some(field), Some(val)) =
-                                (pair[0].to_string_lossy(), pair.get(1).and_then(|v| v.as_str()))
-                            {
-                                hash.set(field, val.to_vec());
-                            }
+                if let Some(entry) = db.get_mut(&key)
+                    && let RedisValue::Hash(hash) = &mut entry.value
+                {
+                    for pair in args[1..].chunks(2) {
+                        if let (Some(field), Some(val)) = (
+                            pair[0].to_string_lossy(),
+                            pair.get(1).and_then(|v| v.as_str()),
+                        ) {
+                            hash.set(field, val.to_vec());
                         }
                     }
                 }
@@ -338,12 +344,12 @@ fn apply_command(
                         )),
                     );
                 }
-                if let Some(entry) = db.get_mut(&key) {
-                    if let RedisValue::Set(set) = &mut entry.value {
-                        for arg in &args[1..] {
-                            if let Some(member) = arg.as_str() {
-                                set.add(member.to_vec());
-                            }
+                if let Some(entry) = db.get_mut(&key)
+                    && let RedisValue::Set(set) = &mut entry.value
+                {
+                    for arg in &args[1..] {
+                        if let Some(member) = arg.as_str() {
+                            set.add(member.to_vec());
                         }
                     }
                 }
@@ -360,34 +366,34 @@ fn apply_command(
                         )),
                     );
                 }
-                if let Some(entry) = db.get_mut(&key) {
-                    if let RedisValue::SortedSet(zset) = &mut entry.value {
-                        for pair in args[1..].chunks(2) {
-                            if let (Some(score_str), Some(member)) =
-                                (pair[0].to_string_lossy(), pair.get(1).and_then(|v| v.as_str()))
-                            {
-                                if let Ok(score) = score_str.parse::<f64>() {
-                                    zset.add(member.to_vec(), score);
-                                }
-                            }
+                if let Some(entry) = db.get_mut(&key)
+                    && let RedisValue::SortedSet(zset) = &mut entry.value
+                {
+                    for pair in args[1..].chunks(2) {
+                        if let (Some(score_str), Some(member)) = (
+                            pair[0].to_string_lossy(),
+                            pair.get(1).and_then(|v| v.as_str()),
+                        ) && let Ok(score) = score_str.parse::<f64>()
+                        {
+                            zset.add(member.to_vec(), score);
                         }
                     }
                 }
             }
         }
         "PEXPIREAT" => {
-            if let (Some(key), Some(ts_str)) = (arg_str(0), arg_str(1)) {
-                if let Ok(ts) = ts_str.parse::<u64>() {
-                    store.db(*current_db).set_expiry(&key, ts);
-                }
+            if let (Some(key), Some(ts_str)) = (arg_str(0), arg_str(1))
+                && let Ok(ts) = ts_str.parse::<u64>()
+            {
+                store.db(*current_db).set_expiry(&key, ts);
             }
         }
         "EXPIRE" => {
-            if let (Some(key), Some(secs_str)) = (arg_str(0), arg_str(1)) {
-                if let Ok(secs) = secs_str.parse::<u64>() {
-                    let ms = crate::store::entry::now_millis() + secs * 1000;
-                    store.db(*current_db).set_expiry(&key, ms);
-                }
+            if let (Some(key), Some(secs_str)) = (arg_str(0), arg_str(1))
+                && let Ok(secs) = secs_str.parse::<u64>()
+            {
+                let ms = crate::store::entry::now_millis() + secs * 1000;
+                store.db(*current_db).set_expiry(&key, ms);
             }
         }
         _ => {} // Skip unknown commands during replay
@@ -448,7 +454,7 @@ fn read_resp_value(reader: &mut io::BufReader<std::fs::File>) -> io::Result<Opti
                         return Err(io::Error::new(
                             io::ErrorKind::UnexpectedEof,
                             "Truncated array",
-                        ))
+                        ));
                     }
                 }
             }

@@ -37,7 +37,9 @@ fn bench_set_get(conn: &mut redis::Connection, iterations: usize) -> (f64, f64) 
     // Benchmark SET
     let start = Instant::now();
     for i in 0..iterations {
-        let _: () = conn.set(format!("bench_key_{i}"), format!("value_{i}")).unwrap();
+        let _: () = conn
+            .set(format!("bench_key_{i}"), format!("value_{i}"))
+            .unwrap();
     }
     let set_elapsed = start.elapsed();
     let set_ops = iterations as f64 / set_elapsed.as_secs_f64();
@@ -84,7 +86,9 @@ fn bench_lpush_lpop(conn: &mut redis::Connection, iterations: usize) -> (f64, f6
 fn bench_hset_hget(conn: &mut redis::Connection, iterations: usize) -> (f64, f64) {
     let start = Instant::now();
     for i in 0..iterations {
-        let _: () = conn.hset("bench_hash", format!("field_{i}"), format!("value_{i}")).unwrap();
+        let _: () = conn
+            .hset("bench_hash", format!("field_{i}"), format!("value_{i}"))
+            .unwrap();
     }
     let hset_elapsed = start.elapsed();
     let hset_ops = iterations as f64 / hset_elapsed.as_secs_f64();

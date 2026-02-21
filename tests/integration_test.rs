@@ -57,7 +57,10 @@ async fn test_echo() {
 
     tokio::task::spawn_blocking(move || {
         let mut conn = get_client(port);
-        let result: String = redis::cmd("ECHO").arg("hello world").query(&mut conn).unwrap();
+        let result: String = redis::cmd("ECHO")
+            .arg("hello world")
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(result, "hello world");
     })
     .await
@@ -163,14 +166,19 @@ async fn test_mset_mget() {
         let mut conn = get_client(port);
 
         let _: () = redis::cmd("MSET")
-            .arg("k1").arg("v1")
-            .arg("k2").arg("v2")
-            .arg("k3").arg("v3")
+            .arg("k1")
+            .arg("v1")
+            .arg("k2")
+            .arg("v2")
+            .arg("k3")
+            .arg("v3")
             .query(&mut conn)
             .unwrap();
 
         let vals: Vec<String> = redis::cmd("MGET")
-            .arg("k1").arg("k2").arg("k3")
+            .arg("k1")
+            .arg("k2")
+            .arg("k3")
             .query(&mut conn)
             .unwrap();
         assert_eq!(vals, vec!["v1", "v2", "v3"]);
@@ -326,7 +334,10 @@ async fn test_type_command() {
         let t: String = redis::cmd("TYPE").arg("st").query(&mut conn).unwrap();
         assert_eq!(t, "set");
 
-        let t: String = redis::cmd("TYPE").arg("nonexistent").query(&mut conn).unwrap();
+        let t: String = redis::cmd("TYPE")
+            .arg("nonexistent")
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(t, "none");
     })
     .await
@@ -371,12 +382,12 @@ async fn test_keys_pattern() {
         keys.sort();
         assert_eq!(keys, vec!["user:1:name", "user:2:name"]);
 
-        let mut keys: Vec<String> = redis::cmd("KEYS")
-            .arg("*")
-            .query(&mut conn)
-            .unwrap();
+        let mut keys: Vec<String> = redis::cmd("KEYS").arg("*").query(&mut conn).unwrap();
         keys.sort();
-        assert_eq!(keys, vec!["other", "user:1:age", "user:1:name", "user:2:name"]);
+        assert_eq!(
+            keys,
+            vec!["other", "user:1:age", "user:1:name", "user:2:name"]
+        );
     })
     .await
     .unwrap();
@@ -418,8 +429,10 @@ async fn test_multi_exec() {
         // Use pipeline for MULTI/EXEC
         let results: Vec<String> = redis::pipe()
             .atomic()
-            .set("tx_key1", "val1").ignore()
-            .set("tx_key2", "val2").ignore()
+            .set("tx_key1", "val1")
+            .ignore()
+            .set("tx_key2", "val2")
+            .ignore()
             .get("tx_key1")
             .get("tx_key2")
             .query(&mut conn)
@@ -593,10 +606,7 @@ async fn test_sort_numeric() {
         let _: () = conn.rpush("nums", "2").unwrap();
         let _: () = conn.rpush("nums", "10").unwrap();
 
-        let sorted: Vec<String> = redis::cmd("SORT")
-            .arg("nums")
-            .query(&mut conn)
-            .unwrap();
+        let sorted: Vec<String> = redis::cmd("SORT").arg("nums").query(&mut conn).unwrap();
         assert_eq!(sorted, vec!["1", "2", "3", "10"]);
     })
     .await
@@ -1356,19 +1366,37 @@ async fn test_setbit_getbit() {
         let mut conn = get_client(port);
 
         // SETBIT returns old value (0)
-        let old: i64 = redis::cmd("SETBIT").arg("bm").arg(7).arg(1).query(&mut conn).unwrap();
+        let old: i64 = redis::cmd("SETBIT")
+            .arg("bm")
+            .arg(7)
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(old, 0);
 
         // GETBIT should return 1
-        let bit: i64 = redis::cmd("GETBIT").arg("bm").arg(7).query(&mut conn).unwrap();
+        let bit: i64 = redis::cmd("GETBIT")
+            .arg("bm")
+            .arg(7)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(bit, 1);
 
         // GETBIT on unset bit returns 0
-        let bit: i64 = redis::cmd("GETBIT").arg("bm").arg(0).query(&mut conn).unwrap();
+        let bit: i64 = redis::cmd("GETBIT")
+            .arg("bm")
+            .arg(0)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(bit, 0);
 
         // SETBIT again returns old value (1)
-        let old: i64 = redis::cmd("SETBIT").arg("bm").arg(7).arg(0).query(&mut conn).unwrap();
+        let old: i64 = redis::cmd("SETBIT")
+            .arg("bm")
+            .arg(7)
+            .arg(0)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(old, 1);
     })
     .await
@@ -1384,8 +1412,15 @@ async fn test_bitcount() {
     tokio::task::spawn_blocking(move || {
         let mut conn = get_client(port);
 
-        let _: () = redis::cmd("SET").arg("mykey").arg("foobar").query(&mut conn).unwrap();
-        let count: i64 = redis::cmd("BITCOUNT").arg("mykey").query(&mut conn).unwrap();
+        let _: () = redis::cmd("SET")
+            .arg("mykey")
+            .arg("foobar")
+            .query(&mut conn)
+            .unwrap();
+        let count: i64 = redis::cmd("BITCOUNT")
+            .arg("mykey")
+            .query(&mut conn)
+            .unwrap();
         assert!(count > 0);
 
         // BITCOUNT with range
@@ -1410,10 +1445,30 @@ async fn test_bitop() {
     tokio::task::spawn_blocking(move || {
         let mut conn = get_client(port);
 
-        let _: i64 = redis::cmd("SETBIT").arg("a").arg(0).arg(1).query(&mut conn).unwrap();
-        let _: i64 = redis::cmd("SETBIT").arg("a").arg(1).arg(1).query(&mut conn).unwrap();
-        let _: i64 = redis::cmd("SETBIT").arg("b").arg(0).arg(1).query(&mut conn).unwrap();
-        let _: i64 = redis::cmd("SETBIT").arg("b").arg(2).arg(1).query(&mut conn).unwrap();
+        let _: i64 = redis::cmd("SETBIT")
+            .arg("a")
+            .arg(0)
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
+        let _: i64 = redis::cmd("SETBIT")
+            .arg("a")
+            .arg(1)
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
+        let _: i64 = redis::cmd("SETBIT")
+            .arg("b")
+            .arg(0)
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
+        let _: i64 = redis::cmd("SETBIT")
+            .arg("b")
+            .arg(2)
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
 
         // AND
         let len: i64 = redis::cmd("BITOP")
@@ -1424,9 +1479,17 @@ async fn test_bitop() {
             .query(&mut conn)
             .unwrap();
         assert!(len > 0);
-        let bit: i64 = redis::cmd("GETBIT").arg("dest").arg(0).query(&mut conn).unwrap();
+        let bit: i64 = redis::cmd("GETBIT")
+            .arg("dest")
+            .arg(0)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(bit, 1); // Both have bit 0 set
-        let bit: i64 = redis::cmd("GETBIT").arg("dest").arg(1).query(&mut conn).unwrap();
+        let bit: i64 = redis::cmd("GETBIT")
+            .arg("dest")
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(bit, 0); // Only a has bit 1
 
         // OR
@@ -1437,9 +1500,17 @@ async fn test_bitop() {
             .arg("b")
             .query(&mut conn)
             .unwrap();
-        let bit: i64 = redis::cmd("GETBIT").arg("dest2").arg(1).query(&mut conn).unwrap();
+        let bit: i64 = redis::cmd("GETBIT")
+            .arg("dest2")
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(bit, 1);
-        let bit: i64 = redis::cmd("GETBIT").arg("dest2").arg(2).query(&mut conn).unwrap();
+        let bit: i64 = redis::cmd("GETBIT")
+            .arg("dest2")
+            .arg(2)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(bit, 1);
     })
     .await
@@ -1455,12 +1526,25 @@ async fn test_bitpos() {
     tokio::task::spawn_blocking(move || {
         let mut conn = get_client(port);
 
-        let _: i64 = redis::cmd("SETBIT").arg("bm").arg(10).arg(1).query(&mut conn).unwrap();
+        let _: i64 = redis::cmd("SETBIT")
+            .arg("bm")
+            .arg(10)
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
 
-        let pos: i64 = redis::cmd("BITPOS").arg("bm").arg(1).query(&mut conn).unwrap();
+        let pos: i64 = redis::cmd("BITPOS")
+            .arg("bm")
+            .arg(1)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(pos, 10);
 
-        let pos: i64 = redis::cmd("BITPOS").arg("bm").arg(0).query(&mut conn).unwrap();
+        let pos: i64 = redis::cmd("BITPOS")
+            .arg("bm")
+            .arg(0)
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(pos, 0);
     })
     .await
@@ -1531,7 +1615,10 @@ async fn test_pfmerge() {
             .query(&mut conn)
             .unwrap();
 
-        let count: i64 = redis::cmd("PFCOUNT").arg("merged").query(&mut conn).unwrap();
+        let count: i64 = redis::cmd("PFCOUNT")
+            .arg("merged")
+            .query(&mut conn)
+            .unwrap();
         assert!(count >= 3 && count <= 5); // Should be ~4
     })
     .await
@@ -1674,7 +1761,10 @@ async fn test_blpop_blocking() {
 
         let elapsed = start.elapsed();
         // Should have blocked for some time (at least 100ms) before getting data
-        assert!(elapsed.as_millis() >= 50, "BLPOP returned too quickly: {elapsed:?}");
+        assert!(
+            elapsed.as_millis() >= 50,
+            "BLPOP returned too quickly: {elapsed:?}"
+        );
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], "blockkey");
         assert_eq!(result[1], "hello");
@@ -1710,7 +1800,10 @@ async fn test_blpop_timeout() {
             .unwrap();
 
         let elapsed = start.elapsed();
-        assert!(elapsed.as_millis() >= 900, "BLPOP timed out too quickly: {elapsed:?}");
+        assert!(
+            elapsed.as_millis() >= 900,
+            "BLPOP timed out too quickly: {elapsed:?}"
+        );
         assert_eq!(result, redis::Value::Nil);
     })
     .await
@@ -1969,7 +2062,11 @@ async fn test_geosearch() {
             .unwrap();
 
         // Should find Catania and Palermo but not Paris
-        assert!(result.len() >= 1 && result.len() <= 2, "Got {} results", result.len());
+        assert!(
+            result.len() >= 1 && result.len() <= 2,
+            "Got {} results",
+            result.len()
+        );
     })
     .await
     .unwrap();
@@ -1987,10 +2084,18 @@ async fn test_copy_command() {
         let mut conn = get_client(port);
 
         // Set a value
-        let _: () = redis::cmd("SET").arg("src").arg("hello").query(&mut conn).unwrap();
+        let _: () = redis::cmd("SET")
+            .arg("src")
+            .arg("hello")
+            .query(&mut conn)
+            .unwrap();
 
         // COPY src to dst
-        let result: i64 = redis::cmd("COPY").arg("src").arg("dst").query(&mut conn).unwrap();
+        let result: i64 = redis::cmd("COPY")
+            .arg("src")
+            .arg("dst")
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(result, 1);
 
         // Verify both exist
@@ -2000,11 +2105,19 @@ async fn test_copy_command() {
         assert_eq!(v2, "hello");
 
         // COPY without REPLACE should fail if dest exists
-        let result: i64 = redis::cmd("COPY").arg("src").arg("dst").query(&mut conn).unwrap();
+        let result: i64 = redis::cmd("COPY")
+            .arg("src")
+            .arg("dst")
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(result, 0);
 
         // COPY with REPLACE should succeed
-        let _: () = redis::cmd("SET").arg("src").arg("world").query(&mut conn).unwrap();
+        let _: () = redis::cmd("SET")
+            .arg("src")
+            .arg("world")
+            .query(&mut conn)
+            .unwrap();
         let result: i64 = redis::cmd("COPY")
             .arg("src")
             .arg("dst")
@@ -2118,16 +2231,11 @@ async fn test_evalsha_and_script() {
         assert_eq!(v, "scriptval");
 
         // SCRIPT FLUSH
-        let _: String = redis::cmd("SCRIPT")
-            .arg("FLUSH")
-            .query(&mut conn)
-            .unwrap();
+        let _: String = redis::cmd("SCRIPT").arg("FLUSH").query(&mut conn).unwrap();
 
         // EVALSHA should now fail
-        let result: redis::RedisResult<String> = redis::cmd("EVALSHA")
-            .arg(&sha)
-            .arg("0")
-            .query(&mut conn);
+        let result: redis::RedisResult<String> =
+            redis::cmd("EVALSHA").arg(&sha).arg("0").query(&mut conn);
         assert!(result.is_err());
     })
     .await
@@ -2146,18 +2254,42 @@ async fn test_object_encoding() {
         let mut conn = get_client(port);
 
         // Integer string
-        let _: () = redis::cmd("SET").arg("num").arg("123").query(&mut conn).unwrap();
-        let enc: String = redis::cmd("OBJECT").arg("ENCODING").arg("num").query(&mut conn).unwrap();
+        let _: () = redis::cmd("SET")
+            .arg("num")
+            .arg("123")
+            .query(&mut conn)
+            .unwrap();
+        let enc: String = redis::cmd("OBJECT")
+            .arg("ENCODING")
+            .arg("num")
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(enc, "int");
 
         // Short string
-        let _: () = redis::cmd("SET").arg("str").arg("hello").query(&mut conn).unwrap();
-        let enc: String = redis::cmd("OBJECT").arg("ENCODING").arg("str").query(&mut conn).unwrap();
+        let _: () = redis::cmd("SET")
+            .arg("str")
+            .arg("hello")
+            .query(&mut conn)
+            .unwrap();
+        let enc: String = redis::cmd("OBJECT")
+            .arg("ENCODING")
+            .arg("str")
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(enc, "embstr");
 
         // List
-        let _: i64 = redis::cmd("RPUSH").arg("list").arg("a").query(&mut conn).unwrap();
-        let enc: String = redis::cmd("OBJECT").arg("ENCODING").arg("list").query(&mut conn).unwrap();
+        let _: i64 = redis::cmd("RPUSH")
+            .arg("list")
+            .arg("a")
+            .query(&mut conn)
+            .unwrap();
+        let enc: String = redis::cmd("OBJECT")
+            .arg("ENCODING")
+            .arg("list")
+            .query(&mut conn)
+            .unwrap();
         assert_eq!(enc, "listpack");
     })
     .await

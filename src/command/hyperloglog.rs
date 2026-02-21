@@ -53,10 +53,10 @@ pub async fn cmd_pfadd(args: &[RespValue], store: &SharedStore, client: &ClientS
 
     let mut changed = false;
     for arg in &args[1..] {
-        if let Some(element) = arg_to_bytes(arg) {
-            if hll.add(element) {
-                changed = true;
-            }
+        if let Some(element) = arg_to_bytes(arg)
+            && hll.add(element)
+        {
+            changed = true;
         }
     }
 
@@ -64,7 +64,11 @@ pub async fn cmd_pfadd(args: &[RespValue], store: &SharedStore, client: &ClientS
 }
 
 /// PFCOUNT key [key ...]
-pub async fn cmd_pfcount(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_pfcount(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("pfcount");
     }
@@ -116,7 +120,11 @@ pub async fn cmd_pfcount(args: &[RespValue], store: &SharedStore, client: &Clien
 }
 
 /// PFMERGE destkey sourcekey [sourcekey ...]
-pub async fn cmd_pfmerge(args: &[RespValue], store: &SharedStore, client: &ClientState) -> RespValue {
+pub async fn cmd_pfmerge(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+) -> RespValue {
     if args.len() < 2 {
         return wrong_arg_count("pfmerge");
     }
@@ -132,8 +140,8 @@ pub async fn cmd_pfmerge(args: &[RespValue], store: &SharedStore, client: &Clien
     let mut merged = HyperLogLog::new();
 
     // If destkey already exists as an HLL, include it in the merge
-    match db.get(&destkey) {
-        Some(entry) => match &entry.value {
+    if let Some(entry) = db.get(&destkey) {
+        match &entry.value {
             RedisValue::HyperLogLog(hll) => {
                 merged.merge(hll);
             }
@@ -142,8 +150,7 @@ pub async fn cmd_pfmerge(args: &[RespValue], store: &SharedStore, client: &Clien
                     "WRONGTYPE Operation against a key holding the wrong kind of value",
                 );
             }
-        },
-        None => {}
+        }
     }
 
     // Merge all source keys
@@ -170,10 +177,7 @@ pub async fn cmd_pfmerge(args: &[RespValue], store: &SharedStore, client: &Clien
     }
 
     // Store the merged result at destkey
-    db.set(
-        destkey,
-        Entry::new(RedisValue::HyperLogLog(merged)),
-    );
+    db.set(destkey, Entry::new(RedisValue::HyperLogLog(merged)));
 
     RespValue::ok()
 }

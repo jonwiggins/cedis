@@ -59,7 +59,7 @@ pub async fn cmd_unsubscribe(
     let channels: Vec<String> = if args.is_empty() {
         ps.client_channel_list(client.id)
     } else {
-        args.iter().filter_map(|a| arg_to_string(a)).collect()
+        args.iter().filter_map(arg_to_string).collect()
     };
 
     if channels.is_empty() {
@@ -136,7 +136,7 @@ pub async fn cmd_punsubscribe(
     let patterns: Vec<String> = if args.is_empty() {
         ps.client_pattern_list(client.id)
     } else {
-        args.iter().filter_map(|a| arg_to_string(a)).collect()
+        args.iter().filter_map(arg_to_string).collect()
     };
 
     if patterns.is_empty() {
@@ -166,10 +166,7 @@ pub async fn cmd_punsubscribe(
     first
 }
 
-pub async fn cmd_publish(
-    args: &[RespValue],
-    pubsub: &SharedPubSub,
-) -> RespValue {
+pub async fn cmd_publish(args: &[RespValue], pubsub: &SharedPubSub) -> RespValue {
     if args.len() != 2 {
         return wrong_arg_count("publish");
     }
@@ -187,10 +184,7 @@ pub async fn cmd_publish(
     RespValue::integer(delivered as i64)
 }
 
-pub async fn cmd_pubsub(
-    args: &[RespValue],
-    pubsub: &SharedPubSub,
-) -> RespValue {
+pub async fn cmd_pubsub(args: &[RespValue], pubsub: &SharedPubSub) -> RespValue {
     if args.is_empty() {
         return wrong_arg_count("pubsub");
     }
@@ -204,7 +198,7 @@ pub async fn cmd_pubsub(
 
     match subcmd.as_str() {
         "CHANNELS" => {
-            let pattern = args.get(1).and_then(|a| arg_to_string(a));
+            let pattern = args.get(1).and_then(arg_to_string);
             let channels = ps.channels_matching(pattern.as_deref());
             let items: Vec<RespValue> = channels
                 .into_iter()
@@ -213,7 +207,7 @@ pub async fn cmd_pubsub(
             RespValue::array(items)
         }
         "NUMSUB" => {
-            let channel_names: Vec<String> = args[1..].iter().filter_map(|a| arg_to_string(a)).collect();
+            let channel_names: Vec<String> = args[1..].iter().filter_map(arg_to_string).collect();
             let results = ps.numsub(&channel_names);
             let mut items = Vec::new();
             for (name, count) in results {
