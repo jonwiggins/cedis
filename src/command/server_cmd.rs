@@ -767,20 +767,32 @@ pub fn cmd_client(args: &[RespValue], client: &mut ClientState) -> RespValue {
         },
         "ID" => RespValue::integer(client.id as i64),
         "LIST" => {
+            let flags = if client.in_multi { "x" }
+                else if client.in_monitor { "O" }
+                else { "N" };
             let info = format!(
-                "id={} addr=127.0.0.1 fd=0 name={} db={} cmd=client\n",
+                "id={} addr=127.0.0.1:0 laddr=127.0.0.1:6379 fd=0 name={} db={} sub=0 psub=0 multi={} watch={} qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags={} events=r cmd=client user=default lib-name= lib-ver=\n",
                 client.id,
                 client.name.as_deref().unwrap_or(""),
                 client.db_index,
+                if client.in_multi { client.multi_queue.len() as i64 } else { -1 },
+                client.watched_keys.len(),
+                flags,
             );
             RespValue::bulk_string(info.into_bytes())
         }
         "INFO" => {
+            let flags = if client.in_multi { "x" }
+                else if client.in_monitor { "O" }
+                else { "N" };
             let info = format!(
-                "id={}\r\naddr=127.0.0.1\r\nname={}\r\ndb={}\r\n",
+                "id={} addr=127.0.0.1:0 laddr=127.0.0.1:6379 fd=0 name={} db={} sub=0 psub=0 multi={} watch={} qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags={} events=r cmd=client user=default lib-name= lib-ver=\n",
                 client.id,
                 client.name.as_deref().unwrap_or(""),
                 client.db_index,
+                if client.in_multi { client.multi_queue.len() as i64 } else { -1 },
+                client.watched_keys.len(),
+                flags,
             );
             RespValue::bulk_string(info.into_bytes())
         }

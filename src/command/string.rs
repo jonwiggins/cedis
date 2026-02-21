@@ -42,6 +42,8 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
     // Parse options: EX, PX, NX, XX, KEEPTTL, GET, IFEQ, IFNE, IFDEQ, IFDNE
     let mut ex: Option<u64> = None;
     let mut px: Option<u64> = None;
+    let mut exat: Option<u64> = None;
+    let mut pxat: Option<u64> = None;
     let mut nx = false;
     let mut xx = false;
     let mut keepttl = false;
@@ -90,7 +92,7 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
                     Some(n) if n > 0 => n as u64,
                     _ => return RespValue::error("ERR invalid expire time in 'set' command"),
                 };
-                px = Some(ts * 1000 - now_millis().max(1)); // Convert to relative ms
+                exat = Some(ts * 1000); // Store as absolute ms
             }
             "PXAT" => {
                 i += 1;
@@ -98,7 +100,7 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
                     Some(n) if n > 0 => n as u64,
                     _ => return RespValue::error("ERR invalid expire time in 'set' command"),
                 };
-                px = Some(ts - now_millis().min(ts)); // Convert to relative ms
+                pxat = Some(ts); // Already in absolute ms
             }
             "NX" => nx = true,
             "XX" => xx = true,
@@ -217,6 +219,10 @@ pub async fn cmd_set(args: &[RespValue], store: &SharedStore, client: &ClientSta
         Some(now_millis() + seconds * 1000)
     } else if let Some(millis) = px {
         Some(now_millis() + millis)
+    } else if let Some(abs_ms) = exat {
+        Some(abs_ms)
+    } else if let Some(abs_ms) = pxat {
+        Some(abs_ms)
     } else if keepttl {
         old_expiry
     } else {
