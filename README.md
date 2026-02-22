@@ -18,10 +18,12 @@ Cedis speaks the **RESP2 protocol** and implements Redis's core data structures 
 - **Lua scripting** via embedded Lua 5.4 (EVAL/EVALSHA with 60+ commands from Lua)
 - **WATCH/MULTI/EXEC transactions** with key-version-based conflict detection
 - **Blocking commands** (BLPOP/BRPOP/BLMOVE/BZPOPMIN/BZPOPMAX/XREADGROUP) with async client wake-up
-- **Memory eviction** with configurable maxmemory and eviction policies (allkeys-random, volatile-random, volatile-ttl)
+- **Memory eviction** with configurable maxmemory and eviction policies (allkeys-random, volatile-random, volatile-ttl, allkeys-lru, volatile-lru)
 - **Passes 16 of 20 tracked Redis TCL test files** in external mode (remaining failures are RESP3, blocking list edge cases, and pub/sub)
-- **~22,900 lines of Rust** across 46 source files, plus ~2,500 lines of tests and benchmarks
-- **122 tests** (49 unit + 73 integration), all passing
+- **Real SLOWLOG tracking** with configurable threshold and ring buffer
+- **LRU eviction** with per-key last-access tracking and sampled eviction
+- **~23,100 lines of Rust** across 47 source files, plus ~2,700 lines of tests and benchmarks
+- **128 tests** (49 unit + 79 integration), all passing
 - **85K ops/sec** single-client, **371K ops/sec** pipelined (redis-benchmark)
 
 ## Progress Report
@@ -44,7 +46,7 @@ The project follows a 9-phase implementation plan. Here is the current status:
 
 ### Test Results
 
-All **122 tests pass** (as of 2026-02-22):
+All **128 tests pass** (as of 2026-02-22):
 
 **49 unit tests:**
 - RESP parser: 19 tests (all types, partial reads, nested arrays, null values, inline commands)
@@ -53,7 +55,7 @@ All **122 tests pass** (as of 2026-02-22):
 - HyperLogLog: 7 tests (add, count, merge, hash determinism, duplicates)
 - Replication backlog: 2 tests (basic operation, circular buffer wraparound)
 
-**73 integration tests** (using the `redis` crate as client, validating wire compatibility):
+**79 integration tests** (using the `redis` crate as client, validating wire compatibility):
 - String commands: GET/SET, MGET/MSET, MSETNX, APPEND/STRLEN, INCR/DECR/INCRBYFLOAT, GETRANGE/SETRANGE, GETSET, GETDEL, SET with NX/XX, SETEX/PSETEX
 - List commands: LPUSH/RPUSH/LPOP/RPOP, LRANGE, LINSERT, RPOPLPUSH, BLPOP/BRPOP (blocking + data-ready + timeout)
 - Hash commands: HSET/HGET/HDEL/HEXISTS/HLEN, HGETALL/HMGET, HINCRBY/HINCRBYFLOAT
@@ -71,6 +73,11 @@ All **122 tests pass** (as of 2026-02-22):
 - Server: PING, ECHO, SELECT, DBSIZE/FLUSHDB/FLUSHALL, INFO, CONFIG GET/SET, TIME, OBJECT ENCODING
 - Sorting: SORT numeric, SORT ALPHA, SORT with LIMIT
 - Memory: CONFIG maxmemory
+- SLOWLOG: SLOWLOG GET/LEN/RESET with real command timing
+- AUTH: 2-arg form (username + password), 1-arg form
+- CONFIG SET: multi-parameter support
+- OBJECT IDLETIME: real idle time tracking
+- INFO replication: live role/replica/backlog data
 - Error handling: WRONGTYPE errors, unknown command errors
 - Concurrency: concurrent client operations
 
@@ -236,7 +243,7 @@ cargo run --release --bin cedis-cli
 ### Run the tests
 
 ```bash
-# All tests (49 unit + 73 integration)
+# All tests (49 unit + 79 integration)
 cargo test
 
 # Unit tests only
@@ -258,6 +265,7 @@ src/
   scripting.rs         Lua scripting engine (redis.call/redis.pcall, 60+ commands)
   pubsub.rs            Pub/Sub message broker with pattern matching
   keywatcher.rs        Async notification for BLPOP/BRPOP wake-up
+  slowlog.rs           Slow query log ring buffer with real timing
   glob.rs              Redis-style glob pattern matching
   store/
     mod.rs             Multi-database store with lazy + active expiration
@@ -299,7 +307,7 @@ src/
   bin/
     cedis-cli.rs       Minimal interactive CLI client
 tests/
-    integration_test.rs  73 integration tests using the redis crate
+    integration_test.rs  79 integration tests using the redis crate
 ```
 
 ## Design Decisions
@@ -318,6 +326,10 @@ tests/
 
 - **PSYNC-based replication** &mdash; masters generate a 40-char replication ID and maintain a circular backlog buffer. Replicas connect, perform a PING/REPLCONF/PSYNC handshake, receive a full RDB for initial sync (or partial data from the backlog for resync), then enter a streaming loop where write commands are forwarded in real-time via per-replica mpsc channels.
 
+- **Sampled LRU eviction** &mdash; each key tracks its last access time. When memory limit is reached, the eviction loop samples 5 random keys and evicts the least recently used, matching Redis's approximated LRU algorithm.
+
+- **Real SLOWLOG** &mdash; every command is timed and commands exceeding the configurable `slowlog-log-slower-than` threshold (default 10ms) are recorded in a bounded ring buffer, queryable via `SLOWLOG GET/LEN/RESET`.
+
 ## Configuration
 
 | Flag | Default | Description |
@@ -334,10 +346,12 @@ tests/
 | `--dbfilename` | `dump.rdb` | RDB filename |
 | `--dir` | `.` | Working directory for persistence files |
 | `--maxmemory` | `0` | Memory limit in bytes (0 = unlimited) |
-| `--maxmemory-policy` | `noeviction` | Eviction policy (noeviction/allkeys-random/volatile-random/volatile-ttl) |
+| `--maxmemory-policy` | `noeviction` | Eviction policy (noeviction/allkeys-random/volatile-random/volatile-ttl/allkeys-lru/volatile-lru) |
 | `--replicaof` | *(none)* | Replicate from master (host port) |
 | `--repl-backlog-size` | `1048576` | Replication backlog size in bytes |
 | `--save` | `3600 1 300 100 60 10000` | Auto-save rules (seconds changes) |
+| `--slowlog-log-slower-than` | `10000` | Slowlog threshold in microseconds (-1 = disabled) |
+| `--slowlog-max-len` | `128` | Maximum slowlog entries |
 
 All configurable parameters are also available via `CONFIG GET`/`CONFIG SET` at runtime.
 

@@ -759,7 +759,16 @@ pub async fn cmd_object(
             if args.len() != 2 {
                 return wrong_arg_count("object|idletime");
             }
-            RespValue::integer(0)
+            let key = match arg_to_string(&args[1]) {
+                Some(k) => k,
+                None => return RespValue::null_bulk_string(),
+            };
+            let store = store.read().await;
+            let db = &store.databases[client.db_index];
+            match db.get_entry(&key) {
+                Some(entry) => RespValue::integer(entry.idle_seconds() as i64),
+                None => RespValue::error("ERR no such key"),
+            }
         }
         "FREQ" => {
             if args.len() != 2 {
@@ -1032,7 +1041,10 @@ pub async fn cmd_restore(
         None
     };
 
-    let entry = Entry { value, expires_at };
+    let entry = match expires_at {
+        Some(exp) => Entry::with_expiry(value, exp),
+        None => Entry::new(value),
+    };
     db.set(key, entry);
     RespValue::ok()
 }
@@ -1300,10 +1312,7 @@ pub async fn cmd_copy(args: &[RespValue], store: &SharedStore, client: &ClientSt
 
     // Check if source exists (with lazy expiration)
     let source_entry = match src_db.get(&source) {
-        Some(entry) => Entry {
-            value: entry.value.clone(),
-            expires_at: entry.expires_at,
-        },
+        Some(entry) => entry.clone(),
         None => return RespValue::integer(0),
     };
 
@@ -1346,10 +1355,7 @@ pub async fn cmd_move(args: &[RespValue], store: &SharedStore, client: &ClientSt
 
     let src_db = &mut store.databases[client.db_index];
     let source_entry = match src_db.get(&key) {
-        Some(entry) => Entry {
-            value: entry.value.clone(),
-            expires_at: entry.expires_at,
-        },
+        Some(entry) => entry.clone(),
         None => return RespValue::integer(0),
     };
 

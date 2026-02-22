@@ -17,8 +17,10 @@ use crate::config::SharedConfig;
 use crate::connection::ClientState;
 use crate::keywatcher::SharedKeyWatcher;
 use crate::pubsub::SharedPubSub;
+use crate::replication::SharedReplicationState;
 use crate::resp::RespValue;
 use crate::scripting::ScriptCache;
+use crate::slowlog::{SharedLastSaveTime, SharedSlowLog};
 use crate::store::SharedStore;
 use tokio::sync::mpsc;
 
@@ -34,6 +36,9 @@ pub async fn dispatch(
     pubsub_tx: &mpsc::UnboundedSender<RespValue>,
     key_watcher: &SharedKeyWatcher,
     script_cache: &ScriptCache,
+    repl_state: &SharedReplicationState,
+    last_save_time: &SharedLastSaveTime,
+    slowlog: &SharedSlowLog,
 ) -> RespValue {
     // If in MULTI mode and this isn't EXEC/DISCARD/MULTI/WATCH/UNWATCH, queue the command
     if client.in_multi && !matches!(cmd_name, "EXEC" | "DISCARD" | "MULTI" | "WATCH" | "UNWATCH") {
@@ -70,7 +75,7 @@ pub async fn dispatch(
         "SWAPDB" => server_cmd::cmd_swapdb(args, store, config).await,
 
         // Server
-        "INFO" => server_cmd::cmd_info(args, store, config).await,
+        "INFO" => server_cmd::cmd_info(args, store, config, repl_state, last_save_time).await,
         "CONFIG" => server_cmd::cmd_config(args, config, store).await,
         "TIME" => server_cmd::cmd_time(),
         "COMMAND" => server_cmd::cmd_command(args),
@@ -279,6 +284,9 @@ pub async fn dispatch(
                 pubsub_tx,
                 key_watcher,
                 script_cache,
+                repl_state,
+                last_save_time,
+                slowlog,
             )
             .await
         }
@@ -295,10 +303,10 @@ pub async fn dispatch(
         "PUBSUB" => pubsub::cmd_pubsub(args, pubsub).await,
 
         // Persistence
-        "SAVE" => server_cmd::cmd_save(store, config).await,
-        "BGSAVE" => server_cmd::cmd_bgsave(store, config).await,
+        "SAVE" => server_cmd::cmd_save(store, config, last_save_time).await,
+        "BGSAVE" => server_cmd::cmd_bgsave(store, config, last_save_time).await,
         "BGREWRITEAOF" => server_cmd::cmd_bgrewriteaof(store, config).await,
-        "LASTSAVE" => server_cmd::cmd_lastsave(),
+        "LASTSAVE" => server_cmd::cmd_lastsave(last_save_time),
 
         // Scripting
         "EVAL" => {
@@ -527,7 +535,7 @@ pub async fn dispatch(
                 _ => RespValue::error("ERR unknown MEMORY subcommand"),
             }
         }
-        "SLOWLOG" => RespValue::array(vec![]),
+        "SLOWLOG" => server_cmd::cmd_slowlog(args, slowlog, config).await,
         "LATENCY" => RespValue::array(vec![]),
         "CLUSTER" => RespValue::error("ERR This instance has cluster support disabled"),
         "WAITAOF" => RespValue::array(vec![RespValue::integer(0), RespValue::integer(0)]),

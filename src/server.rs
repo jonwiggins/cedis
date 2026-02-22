@@ -7,6 +7,7 @@ use crate::pubsub::{PubSubReceiver, SharedPubSub};
 use crate::replication::{ReplicationRole, SharedReplicationState};
 use crate::resp::{RespParser, RespValue};
 use crate::scripting::ScriptCache;
+use crate::slowlog::{SharedLastSaveTime, SharedSlowLog, SlowLog};
 use crate::store::SharedStore;
 use bytes::BytesMut;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info};
 
 type SharedChangeCounter = Arc<AtomicU64>;
@@ -39,6 +40,11 @@ pub async fn run_server(
     let key_watcher: SharedKeyWatcher = Arc::new(RwLock::new(KeyWatcher::new()));
     let script_cache = ScriptCache::new();
     let monitor_tx = new_monitor_sender();
+    let last_save_time: SharedLastSaveTime = crate::slowlog::new_last_save_time();
+    let slowlog: SharedSlowLog = {
+        let cfg = config.read().await;
+        Arc::new(Mutex::new(SlowLog::new(cfg.slowlog_max_len)))
+    };
 
     // Spawn active expiration background task
     let store_clone = store.clone();
@@ -57,8 +63,9 @@ pub async fn run_server(
     let store_clone = store.clone();
     let config_clone = config.clone();
     let changes_clone = change_counter.clone();
+    let last_save_clone = last_save_time.clone();
     tokio::spawn(async move {
-        auto_save_loop(store_clone, config_clone, changes_clone).await;
+        auto_save_loop(store_clone, config_clone, changes_clone, last_save_clone).await;
     });
 
     // Spawn memory eviction background task
@@ -88,10 +95,13 @@ pub async fn run_server(
             let pubsub_c = pubsub.clone();
             let kw_c = key_watcher.clone();
             let sc_c = script_cache.clone();
+            let lst_c = last_save_time.clone();
+            let sl_c = slowlog.clone();
 
             tokio::spawn(async move {
                 crate::replication::replica::replica_sync_loop(
-                    host, port, store_c, config_c, repl_c, pubsub_c, kw_c, sc_c, cancel,
+                    host, port, store_c, config_c, repl_c, pubsub_c, kw_c, sc_c, cancel, lst_c,
+                    sl_c,
                 )
                 .await;
             });
@@ -114,9 +124,11 @@ pub async fn run_server(
                 let script_cache = script_cache.clone();
                 let monitor_tx = monitor_tx.clone();
                 let repl_state = repl_state.clone();
+                let last_save_time = last_save_time.clone();
+                let slowlog = slowlog.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher, script_cache, monitor_tx, repl_state).await {
+                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher, script_cache, monitor_tx, repl_state, last_save_time, slowlog).await {
                         debug!("Connection error from {peer_addr}: {e}");
                     }
                     debug!("Connection closed: {peer_addr}");
@@ -145,6 +157,8 @@ async fn handle_connection(
     script_cache: ScriptCache,
     monitor_tx: MonitorSender,
     repl_state: SharedReplicationState,
+    last_save_time: SharedLastSaveTime,
+    slowlog: SharedSlowLog,
 ) -> std::io::Result<()> {
     let mut client = ClientState::new();
     let mut buf = BytesMut::with_capacity(4096);
@@ -222,6 +236,24 @@ async fn handle_connection(
                             && items[0].to_string_lossy().map(|s| s.to_uppercase()) == Some("MONITOR".to_string())
                     );
 
+                    // Extract slowlog info before value is moved
+                    let slowlog_info: Option<(String, Vec<String>)> =
+                        if let RespValue::Array(Some(ref items)) = value {
+                            let cmd_name_str = items[0]
+                                .to_string_lossy()
+                                .unwrap_or_default()
+                                .to_uppercase();
+                            let args_strs: Vec<String> = items[1..]
+                                .iter()
+                                .take(10)
+                                .filter_map(|a| a.to_string_lossy())
+                                .collect();
+                            Some((cmd_name_str, args_strs))
+                        } else {
+                            None
+                        };
+
+                    let cmd_start = std::time::Instant::now();
                     let response = process_command(
                         value,
                         &store,
@@ -235,8 +267,31 @@ async fn handle_connection(
                         &script_cache,
                         &monitor_tx,
                         &repl_state,
+                        &last_save_time,
+                        &slowlog,
                     )
                     .await;
+                    let cmd_duration = cmd_start.elapsed();
+
+                    // Log to slowlog if above threshold
+                    if let Some((cmd_name_str, args_strs)) = slowlog_info {
+                        let cfg = config.read().await;
+                        let threshold = cfg.slowlog_log_slower_than;
+                        if threshold >= 0 && cmd_duration.as_micros() as i64 > threshold {
+                            let timestamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            let mut sl = slowlog.lock().await;
+                            sl.set_max_len(cfg.slowlog_max_len);
+                            sl.add(
+                                timestamp,
+                                cmd_duration.as_micros() as u64,
+                                cmd_name_str,
+                                args_strs,
+                            );
+                        }
+                    }
 
                     let serialized = response.serialize();
                     stream.write_all(&serialized).await?;
@@ -424,6 +479,8 @@ async fn process_command(
     script_cache: &ScriptCache,
     monitor_tx: &MonitorSender,
     repl_state: &SharedReplicationState,
+    last_save_time: &SharedLastSaveTime,
+    slowlog: &SharedSlowLog,
 ) -> RespValue {
     let items = match value {
         RespValue::Array(Some(items)) if !items.is_empty() => items,
@@ -529,6 +586,9 @@ async fn process_command(
         pubsub_tx,
         key_watcher,
         script_cache,
+        repl_state,
+        last_save_time,
+        slowlog,
     )
     .await;
 
@@ -651,7 +711,12 @@ async fn aof_fsync_loop(aof: SharedAofWriter) {
 }
 
 /// Background task that periodically saves RDB snapshots based on save rules.
-async fn auto_save_loop(store: SharedStore, config: SharedConfig, changes: SharedChangeCounter) {
+async fn auto_save_loop(
+    store: SharedStore,
+    config: SharedConfig,
+    changes: SharedChangeCounter,
+    last_save_time: SharedLastSaveTime,
+) {
     let mut last_save = std::time::Instant::now();
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -676,6 +741,11 @@ async fn auto_save_loop(store: SharedStore, config: SharedConfig, changes: Share
             if let Err(e) = crate::persistence::rdb::save(&store, &path) {
                 tracing::warn!("Auto-save failed: {e}");
             } else {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                last_save_time.store(now, std::sync::atomic::Ordering::Relaxed);
                 tracing::info!("Auto-save completed ({current_changes} changes)");
             }
             drop(store);
@@ -713,6 +783,14 @@ async fn memory_eviction_loop(store: SharedStore, config: SharedConfig) {
                     .databases
                     .iter_mut()
                     .any(|db| db.evict_one_volatile_ttl()),
+                "allkeys-lru" => store
+                    .databases
+                    .iter_mut()
+                    .any(|db| db.evict_one_allkeys_lru()),
+                "volatile-lru" => store
+                    .databases
+                    .iter_mut()
+                    .any(|db| db.evict_one_volatile_lru()),
                 _ => false, // noeviction - do nothing
             };
             if !evicted {

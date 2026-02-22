@@ -19,5 +19,6 @@ pub mod replication;
 pub mod resp;
 pub mod scripting;
 pub mod server;
+pub mod slowlog;
 pub mod store;
 pub mod types;

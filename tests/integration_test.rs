@@ -2296,3 +2296,270 @@ async fn test_object_encoding() {
     .await
     .unwrap();
 }
+
+// =========== SLOWLOG tests ===========
+
+#[tokio::test]
+async fn test_slowlog_commands() {
+    let port = 16452;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // Set threshold to 0 so every command is logged
+        let _: String = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("slowlog-log-slower-than")
+            .arg("0")
+            .query(&mut conn)
+            .unwrap();
+
+        // Reset slowlog
+        let _: String = redis::cmd("SLOWLOG").arg("RESET").query(&mut conn).unwrap();
+
+        // Run some commands
+        let _: String = redis::cmd("SET")
+            .arg("key1")
+            .arg("value1")
+            .query(&mut conn)
+            .unwrap();
+        let _: Option<String> = redis::cmd("GET").arg("key1").query(&mut conn).unwrap();
+
+        // SLOWLOG LEN should be > 0
+        let len: i64 = redis::cmd("SLOWLOG").arg("LEN").query(&mut conn).unwrap();
+        assert!(len > 0, "SLOWLOG LEN should be > 0, got {len}");
+
+        // SLOWLOG GET should return entries
+        let entries: Vec<redis::Value> = redis::cmd("SLOWLOG").arg("GET").query(&mut conn).unwrap();
+        assert!(!entries.is_empty(), "SLOWLOG GET should return entries");
+
+        // Disable slowlog before resetting, so RESET itself isn't logged
+        let _: String = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("slowlog-log-slower-than")
+            .arg("-1")
+            .query(&mut conn)
+            .unwrap();
+
+        // SLOWLOG RESET should clear entries
+        let _: String = redis::cmd("SLOWLOG").arg("RESET").query(&mut conn).unwrap();
+        let len_after: i64 = redis::cmd("SLOWLOG").arg("LEN").query(&mut conn).unwrap();
+        assert_eq!(len_after, 0, "SLOWLOG LEN should be 0 after RESET");
+    })
+    .await
+    .unwrap();
+}
+
+// =========== AUTH with username test ===========
+
+#[tokio::test]
+async fn test_auth_with_username() {
+    let port = 16453;
+    // Start server with password
+    let config = cedis::config::Config {
+        port,
+        requirepass: Some("testpass".to_string()),
+        ..Default::default()
+    };
+    let num_dbs = config.databases;
+    let config = Arc::new(RwLock::new(config));
+    let store = Arc::new(RwLock::new(cedis::store::DataStore::new(num_dbs)));
+    let pubsub = Arc::new(RwLock::new(cedis::pubsub::PubSubRegistry::new()));
+    let aof = Arc::new(Mutex::new(cedis::persistence::aof::AofWriter::new()));
+    let repl_state = Arc::new(RwLock::new(cedis::replication::ReplicationState::new()));
+    tokio::spawn(async move {
+        let _ = cedis::server::run_server(store, config, pubsub, aof, repl_state).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let client = redis::Client::open(format!("redis://127.0.0.1:{port}/")).unwrap();
+        let mut conn = loop {
+            match client.get_connection() {
+                Ok(c) => break c,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            }
+        };
+
+        // AUTH with 1 arg (password only)
+        let result: String = redis::cmd("AUTH").arg("testpass").query(&mut conn).unwrap();
+        assert_eq!(result, "OK");
+
+        // AUTH with 2 args (username + password)
+        let result2: String = redis::cmd("AUTH")
+            .arg("default")
+            .arg("testpass")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result2, "OK");
+
+        // Verify commands work after auth
+        let _: String = redis::cmd("SET")
+            .arg("k")
+            .arg("v")
+            .query(&mut conn)
+            .unwrap();
+        let v: String = redis::cmd("GET").arg("k").query(&mut conn).unwrap();
+        assert_eq!(v, "v");
+    })
+    .await
+    .unwrap();
+}
+
+// =========== CONFIG SET multi-param test ===========
+
+#[tokio::test]
+async fn test_config_set_multi_param() {
+    let port = 16454;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // CONFIG SET with multiple key-value pairs
+        let _: String = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("hz")
+            .arg("20")
+            .arg("timeout")
+            .arg("300")
+            .query(&mut conn)
+            .unwrap();
+
+        // Verify both were set
+        let hz: Vec<String> = redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("hz")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(hz[1], "20");
+
+        let timeout: Vec<String> = redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("timeout")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(timeout[1], "300");
+    })
+    .await
+    .unwrap();
+}
+
+// =========== OBJECT IDLETIME test ===========
+
+#[tokio::test]
+async fn test_object_idletime() {
+    let port = 16455;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // SET a key
+        let _: String = redis::cmd("SET")
+            .arg("idlekey")
+            .arg("value")
+            .query(&mut conn)
+            .unwrap();
+
+        // OBJECT IDLETIME right after set should be 0 or very small
+        let idle: i64 = redis::cmd("OBJECT")
+            .arg("IDLETIME")
+            .arg("idlekey")
+            .query(&mut conn)
+            .unwrap();
+        assert!(idle <= 1, "OBJECT IDLETIME should be <= 1 sec, got {idle}");
+    })
+    .await
+    .unwrap();
+}
+
+// =========== INFO replication test ===========
+
+#[tokio::test]
+async fn test_info_replication() {
+    let port = 16456;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        let info: String = redis::cmd("INFO")
+            .arg("replication")
+            .query(&mut conn)
+            .unwrap();
+
+        assert!(
+            info.contains("role:master"),
+            "INFO replication should contain role:master"
+        );
+        assert!(
+            info.contains("connected_slaves:0"),
+            "INFO replication should contain connected_slaves:0"
+        );
+        assert!(
+            info.contains("master_replid:"),
+            "INFO replication should contain master_replid"
+        );
+        // The replid should not be all zeros (it's randomly generated)
+        assert!(
+            !info.contains("master_replid:0000000000000000000000000000000000000000"),
+            "master_replid should not be all zeros"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+// =========== CONFIG GET slowlog params test ===========
+
+#[tokio::test]
+async fn test_config_slowlog_params() {
+    let port = 16457;
+    let _server = start_server(port);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tokio::task::spawn_blocking(move || {
+        let mut conn = get_client(port);
+
+        // CONFIG GET slowlog-log-slower-than (default: 10000)
+        let result: Vec<String> = redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("slowlog-log-slower-than")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result[0], "slowlog-log-slower-than");
+        assert_eq!(result[1], "10000");
+
+        // CONFIG GET slowlog-max-len (default: 128)
+        let result: Vec<String> = redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("slowlog-max-len")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result[0], "slowlog-max-len");
+        assert_eq!(result[1], "128");
+
+        // CONFIG SET slowlog-log-slower-than
+        let _: String = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("slowlog-log-slower-than")
+            .arg("5000")
+            .query(&mut conn)
+            .unwrap();
+
+        let result: Vec<String> = redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("slowlog-log-slower-than")
+            .query(&mut conn)
+            .unwrap();
+        assert_eq!(result[1], "5000");
+    })
+    .await
+    .unwrap();
+}

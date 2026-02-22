@@ -958,9 +958,10 @@ pub async fn cmd_msetex(
         } else {
             expire_ms.map(|ms| now + ms)
         };
-        let entry = Entry {
-            value: RedisValue::String(RedisString::new(val.to_vec())),
-            expires_at,
+        let value = RedisValue::String(RedisString::new(val.to_vec()));
+        let entry = match expires_at {
+            Some(exp) => Entry::with_expiry(value, exp),
+            None => Entry::new(value),
         };
         db.set(key, entry);
     }

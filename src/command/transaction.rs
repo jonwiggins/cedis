@@ -2,8 +2,10 @@ use crate::config::SharedConfig;
 use crate::connection::ClientState;
 use crate::keywatcher::SharedKeyWatcher;
 use crate::pubsub::SharedPubSub;
+use crate::replication::SharedReplicationState;
 use crate::resp::RespValue;
 use crate::scripting::ScriptCache;
+use crate::slowlog::{SharedLastSaveTime, SharedSlowLog};
 use crate::store::SharedStore;
 use tokio::sync::mpsc;
 
@@ -17,6 +19,7 @@ pub fn cmd_multi(client: &mut ClientState) -> RespValue {
     RespValue::ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_exec<'a>(
     store: &'a SharedStore,
     config: &'a SharedConfig,
@@ -25,6 +28,9 @@ pub fn cmd_exec<'a>(
     pubsub_tx: &'a mpsc::UnboundedSender<RespValue>,
     key_watcher: &'a SharedKeyWatcher,
     script_cache: &'a ScriptCache,
+    repl_state: &'a SharedReplicationState,
+    last_save_time: &'a SharedLastSaveTime,
+    slowlog: &'a SharedSlowLog,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RespValue> + Send + 'a>> {
     Box::pin(async move {
         if !client.in_multi {
@@ -96,6 +102,9 @@ pub fn cmd_exec<'a>(
                 pubsub_tx,
                 key_watcher,
                 script_cache,
+                repl_state,
+                last_save_time,
+                slowlog,
             )
             .await;
             results.push(result);

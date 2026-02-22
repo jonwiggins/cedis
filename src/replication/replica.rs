@@ -30,6 +30,8 @@ pub async fn replica_sync_loop(
     key_watcher: SharedKeyWatcher,
     script_cache: ScriptCache,
     cancel: CancellationToken,
+    last_save_time: crate::slowlog::SharedLastSaveTime,
+    slowlog: crate::slowlog::SharedSlowLog,
 ) {
     let mut retry_delay = Duration::from_secs(1);
     let max_retry_delay = Duration::from_secs(30);
@@ -69,6 +71,8 @@ pub async fn replica_sync_loop(
                     &key_watcher,
                     &script_cache,
                     &cancel,
+                    &last_save_time,
+                    &slowlog,
                 )
                 .await
                 {
@@ -108,6 +112,8 @@ async fn run_sync(
     key_watcher: &SharedKeyWatcher,
     script_cache: &ScriptCache,
     cancel: &CancellationToken,
+    last_save_time: &crate::slowlog::SharedLastSaveTime,
+    slowlog: &crate::slowlog::SharedSlowLog,
 ) -> Result<(), String> {
     let mut buf = BytesMut::with_capacity(8192);
 
@@ -223,6 +229,8 @@ async fn run_sync(
                                 key_watcher,
                                 script_cache,
                                 repl_state,
+                                last_save_time,
+                                slowlog,
                             ).await;
                         }
                     }
@@ -259,6 +267,8 @@ async fn apply_command(
     key_watcher: &SharedKeyWatcher,
     script_cache: &ScriptCache,
     repl_state: &SharedReplicationState,
+    last_save_time: &crate::slowlog::SharedLastSaveTime,
+    slowlog: &crate::slowlog::SharedSlowLog,
 ) {
     let items = match &value {
         RespValue::Array(Some(items)) if !items.is_empty() => items,
@@ -307,6 +317,9 @@ async fn apply_command(
         pubsub_tx,
         key_watcher,
         script_cache,
+        repl_state,
+        last_save_time,
+        slowlog,
     )
     .await;
 }

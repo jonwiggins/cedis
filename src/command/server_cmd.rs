@@ -2,8 +2,11 @@ use crate::command::{arg_to_i64, arg_to_string, wrong_arg_count};
 use crate::config::SharedConfig;
 use crate::connection::ClientState;
 use crate::persistence;
+use crate::replication::{ReplicationRole, SharedReplicationState};
 use crate::resp::RespValue;
+use crate::slowlog::{SharedLastSaveTime, SharedSlowLog};
 use crate::store::SharedStore;
+use std::sync::atomic::Ordering;
 
 pub fn cmd_ping(args: &[RespValue]) -> RespValue {
     if args.is_empty() {
@@ -63,13 +66,32 @@ pub async fn cmd_auth(
     client: &mut ClientState,
     config: &SharedConfig,
 ) -> RespValue {
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return wrong_arg_count("auth");
     }
 
-    let password = match arg_to_string(&args[0]) {
-        Some(p) => p,
-        None => return RespValue::error("ERR invalid password"),
+    // AUTH password  OR  AUTH username password
+    let password = if args.len() == 2 {
+        // 2-arg form: AUTH username password
+        // Accept "default" username (no real ACL), reject others
+        let username = match arg_to_string(&args[0]) {
+            Some(u) => u,
+            None => return RespValue::error("ERR invalid username"),
+        };
+        if !username.eq_ignore_ascii_case("default") {
+            return RespValue::error(
+                "WRONGPASS invalid username-password pair or user is disabled.",
+            );
+        }
+        match arg_to_string(&args[1]) {
+            Some(p) => p,
+            None => return RespValue::error("ERR invalid password"),
+        }
+    } else {
+        match arg_to_string(&args[0]) {
+            Some(p) => p,
+            None => return RespValue::error("ERR invalid password"),
+        }
     };
 
     let cfg = config.read().await;
@@ -136,7 +158,13 @@ pub async fn cmd_swapdb(
     }
 }
 
-pub async fn cmd_info(args: &[RespValue], store: &SharedStore, config: &SharedConfig) -> RespValue {
+pub async fn cmd_info(
+    args: &[RespValue],
+    store: &SharedStore,
+    config: &SharedConfig,
+    repl_state: &SharedReplicationState,
+    last_save_time: &SharedLastSaveTime,
+) -> RespValue {
     let cfg = config.read().await;
     let mut store = store.write().await;
 
@@ -318,9 +346,10 @@ pub async fn cmd_info(args: &[RespValue], store: &SharedStore, config: &SharedCo
         info.push_str("current_fork_perc:0.00\r\n");
         info.push_str("current_save_keys_processed:0\r\n");
         info.push_str("current_save_keys_total:0\r\n");
+        let last_save = last_save_time.load(Ordering::Relaxed);
         info.push_str(&format!("rdb_changes_since_last_save:{}\r\n", store.dirty));
         info.push_str("rdb_bgsave_in_progress:0\r\n");
-        info.push_str("rdb_last_save_time:0\r\n");
+        info.push_str(&format!("rdb_last_save_time:{}\r\n", last_save));
         info.push_str("rdb_last_bgsave_status:ok\r\n");
         info.push_str("rdb_last_bgsave_time_sec:-1\r\n");
         info.push_str("rdb_current_bgsave_time_sec:-1\r\n");
@@ -343,18 +372,49 @@ pub async fn cmd_info(args: &[RespValue], store: &SharedStore, config: &SharedCo
     }
 
     if show_section("replication") {
+        let rs = repl_state.read().await;
         info.push_str("# Replication\r\n");
-        info.push_str("role:master\r\n");
-        info.push_str("connected_slaves:0\r\n");
+        let role = match rs.role {
+            ReplicationRole::Master => "master",
+            ReplicationRole::Replica => "slave",
+        };
+        info.push_str(&format!("role:{}\r\n", role));
+        if rs.role == ReplicationRole::Replica {
+            info.push_str(&format!(
+                "master_host:{}\r\n",
+                rs.master_host.as_deref().unwrap_or("?")
+            ));
+            info.push_str(&format!("master_port:{}\r\n", rs.master_port.unwrap_or(0)));
+            info.push_str(&format!("master_link_status:{}\r\n", rs.master_link_status));
+            info.push_str(&format!(
+                "master_sync_in_progress:{}\r\n",
+                if rs.master_sync_in_progress { 1 } else { 0 }
+            ));
+        }
+        info.push_str(&format!("connected_slaves:{}\r\n", rs.connected_slaves()));
+        for (i, replica) in rs.replicas.iter().enumerate() {
+            info.push_str(&format!(
+                "slave{}:ip={},port={},state={},offset={},lag={}\r\n",
+                i, replica.addr, replica.port, replica.state, replica.offset, replica.lag
+            ));
+        }
         info.push_str("master_failover_state:no-failover\r\n");
-        info.push_str("master_replid:0000000000000000000000000000000000000000\r\n");
-        info.push_str("master_replid2:0000000000000000000000000000000000000000\r\n");
-        info.push_str("master_repl_offset:0\r\n");
-        info.push_str("second_repl_offset:-1\r\n");
-        info.push_str("repl_backlog_active:0\r\n");
-        info.push_str("repl_backlog_size:1048576\r\n");
-        info.push_str("repl_backlog_first_byte_offset:0\r\n");
-        info.push_str("repl_backlog_histlen:0\r\n");
+        info.push_str(&format!("master_replid:{}\r\n", rs.master_replid));
+        info.push_str(&format!("master_replid2:{}\r\n", rs.master_replid2));
+        info.push_str(&format!("master_repl_offset:{}\r\n", rs.master_repl_offset));
+        info.push_str(&format!("second_repl_offset:{}\r\n", rs.second_repl_offset));
+        let (backlog_active, backlog_size, backlog_first, backlog_histlen) = match &rs.backlog {
+            Some(bl) => (1, bl.capacity(), bl.first_byte_offset(), bl.histlen()),
+            None => (0, 1048576, 0, 0),
+        };
+        info.push_str(&format!("repl_backlog_active:{}\r\n", backlog_active));
+        info.push_str(&format!("repl_backlog_size:{}\r\n", backlog_size));
+        info.push_str(&format!(
+            "repl_backlog_first_byte_offset:{}\r\n",
+            backlog_first
+        ));
+        info.push_str(&format!("repl_backlog_histlen:{}\r\n", backlog_histlen));
+        drop(rs);
         info.push_str("\r\n");
     }
 
@@ -451,6 +511,8 @@ pub async fn cmd_config(
                 "set-max-intset-entries",
                 "set-max-listpack-entries",
                 "set-max-listpack-value",
+                "slowlog-log-slower-than",
+                "slowlog-max-len",
                 "list-compress-depth",
                 "zset-max-listpack-entries",
                 "zset-max-ziplist-entries",
@@ -484,23 +546,27 @@ pub async fn cmd_config(
             RespValue::array(result)
         }
         "SET" => {
-            if args.len() != 3 {
+            // CONFIG SET key value [key value ...]
+            let pairs = &args[1..];
+            if pairs.is_empty() || !pairs.len().is_multiple_of(2) {
                 return wrong_arg_count("config|set");
             }
-            let param = match arg_to_string(&args[1]) {
-                Some(s) => s,
-                None => return RespValue::error("ERR invalid parameter"),
-            };
-            let value = match arg_to_string(&args[2]) {
-                Some(s) => s,
-                None => return RespValue::error("ERR invalid value"),
-            };
 
             let mut cfg = config.write().await;
-            match cfg.set(&param, &value) {
-                Ok(()) => RespValue::ok(),
-                Err(e) => RespValue::error(format!("ERR {e}")),
+            for chunk in pairs.chunks(2) {
+                let param = match arg_to_string(&chunk[0]) {
+                    Some(s) => s,
+                    None => return RespValue::error("ERR invalid parameter"),
+                };
+                let value = match arg_to_string(&chunk[1]) {
+                    Some(s) => s,
+                    None => return RespValue::error("ERR invalid value"),
+                };
+                if let Err(e) = cfg.set(&param, &value) {
+                    return RespValue::error(format!("ERR {e}"));
+                }
             }
+            RespValue::ok()
         }
         "RESETSTAT" => {
             let mut store = store.write().await;
@@ -1207,21 +1273,37 @@ pub fn cmd_reset(client: &mut ClientState) -> RespValue {
     RespValue::SimpleString("RESET".to_string())
 }
 
-pub async fn cmd_save(store: &SharedStore, config: &SharedConfig) -> RespValue {
+pub async fn cmd_save(
+    store: &SharedStore,
+    config: &SharedConfig,
+    last_save_time: &SharedLastSaveTime,
+) -> RespValue {
     let store = store.read().await;
     let cfg = config.read().await;
     let path = format!("{}/{}", cfg.dir, cfg.dbfilename);
     drop(cfg);
 
     match persistence::rdb::save(&store, &path) {
-        Ok(()) => RespValue::ok(),
+        Ok(()) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            last_save_time.store(now, Ordering::Relaxed);
+            RespValue::ok()
+        }
         Err(e) => RespValue::error(format!("ERR {e}")),
     }
 }
 
-pub async fn cmd_bgsave(store: &SharedStore, config: &SharedConfig) -> RespValue {
+pub async fn cmd_bgsave(
+    store: &SharedStore,
+    config: &SharedConfig,
+    last_save_time: &SharedLastSaveTime,
+) -> RespValue {
     let store = store.clone();
     let config = config.clone();
+    let last_save_time = last_save_time.clone();
     tokio::spawn(async move {
         let store = store.read().await;
         let cfg = config.read().await;
@@ -1230,6 +1312,11 @@ pub async fn cmd_bgsave(store: &SharedStore, config: &SharedConfig) -> RespValue
         if let Err(e) = persistence::rdb::save(&store, &path) {
             tracing::warn!("Background save failed: {e}");
         } else {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            last_save_time.store(now, Ordering::Relaxed);
             tracing::info!("Background save completed");
         }
     });
@@ -1288,10 +1375,85 @@ pub fn cmd_hello(args: &[RespValue]) -> RespValue {
     ])
 }
 
-pub fn cmd_lastsave() -> RespValue {
-    // Return current time as an approximation (no global last-save timestamp tracked)
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock before UNIX epoch");
-    RespValue::integer(now.as_secs() as i64)
+pub fn cmd_lastsave(last_save_time: &SharedLastSaveTime) -> RespValue {
+    RespValue::integer(last_save_time.load(Ordering::Relaxed))
+}
+
+pub async fn cmd_slowlog(
+    args: &[RespValue],
+    slowlog: &SharedSlowLog,
+    config: &SharedConfig,
+) -> RespValue {
+    if args.is_empty() {
+        return wrong_arg_count("slowlog");
+    }
+
+    let subcmd = match arg_to_string(&args[0]) {
+        Some(s) => s.to_uppercase(),
+        None => return RespValue::error("ERR invalid subcommand"),
+    };
+
+    match subcmd.as_str() {
+        "GET" => {
+            let count = if args.len() >= 2 {
+                match arg_to_i64(&args[1]) {
+                    Some(n) if n >= 0 => n as usize,
+                    Some(n) if n < 0 => {
+                        // Negative count means all entries
+                        let sl = slowlog.lock().await;
+                        sl.len()
+                    }
+                    _ => return RespValue::error("ERR value is not an integer or out of range"),
+                }
+            } else {
+                // Default: return up to slowlog-max-len entries
+                let cfg = config.read().await;
+                cfg.slowlog_max_len
+            };
+
+            let sl = slowlog.lock().await;
+            let entries = sl.get(count);
+            let result: Vec<RespValue> = entries
+                .into_iter()
+                .map(|e| {
+                    let mut cmd_args: Vec<RespValue> = Vec::with_capacity(1 + e.args.len());
+                    cmd_args.push(RespValue::bulk_string(e.cmd_name.as_bytes().to_vec()));
+                    for arg in &e.args {
+                        cmd_args.push(RespValue::bulk_string(arg.as_bytes().to_vec()));
+                    }
+                    RespValue::array(vec![
+                        RespValue::integer(e.id as i64),
+                        RespValue::integer(e.timestamp as i64),
+                        RespValue::integer(e.duration_micros as i64),
+                        RespValue::array(cmd_args),
+                        RespValue::bulk_string(b"".to_vec()),
+                        RespValue::bulk_string(b"".to_vec()),
+                    ])
+                })
+                .collect();
+            RespValue::array(result)
+        }
+        "LEN" => {
+            let sl = slowlog.lock().await;
+            RespValue::integer(sl.len() as i64)
+        }
+        "RESET" => {
+            let mut sl = slowlog.lock().await;
+            sl.reset();
+            RespValue::ok()
+        }
+        "HELP" => RespValue::array(vec![
+            RespValue::bulk_string(b"SLOWLOG GET [<count>]".to_vec()),
+            RespValue::bulk_string(
+                b"    Return top <count> entries from the slowlog (default: all).".to_vec(),
+            ),
+            RespValue::bulk_string(b"SLOWLOG LEN".to_vec()),
+            RespValue::bulk_string(b"    Return the number of entries in the slowlog.".to_vec()),
+            RespValue::bulk_string(b"SLOWLOG RESET".to_vec()),
+            RespValue::bulk_string(b"    Reset the slowlog.".to_vec()),
+        ]),
+        _ => RespValue::error(format!(
+            "ERR Unknown subcommand or wrong number of arguments for SLOWLOG {subcmd}"
+        )),
+    }
 }

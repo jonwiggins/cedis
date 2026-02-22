@@ -51,6 +51,25 @@ impl ReplicationBacklog {
         offset >= self.start_offset && offset <= self.end_offset
     }
 
+    /// Return the capacity of the backlog buffer.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Return the first valid byte offset in the backlog.
+    pub fn first_byte_offset(&self) -> i64 {
+        self.start_offset
+    }
+
+    /// Return the amount of valid data in the backlog (histlen).
+    pub fn histlen(&self) -> usize {
+        if self.total_written == 0 {
+            0
+        } else {
+            std::cmp::min(self.total_written, self.capacity)
+        }
+    }
+
     /// Read all data from `offset` to the current end.
     /// Returns None if the offset is no longer in the backlog.
     pub fn read_from(&self, offset: i64) -> Option<Vec<u8>> {

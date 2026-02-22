@@ -7,6 +7,8 @@ pub struct Entry {
     pub value: RedisValue,
     /// Expiry time as milliseconds since UNIX epoch. None = no expiry.
     pub expires_at: Option<u64>,
+    /// Last access time in seconds since UNIX epoch (for LRU eviction / OBJECT IDLETIME).
+    pub last_access: u64,
 }
 
 impl Entry {
@@ -14,6 +16,7 @@ impl Entry {
         Entry {
             value,
             expires_at: None,
+            last_access: now_seconds(),
         }
     }
 
@@ -21,7 +24,18 @@ impl Entry {
         Entry {
             value,
             expires_at: Some(expires_at),
+            last_access: now_seconds(),
         }
+    }
+
+    /// Update the last access time to now.
+    pub fn touch_access(&mut self) {
+        self.last_access = now_seconds();
+    }
+
+    /// Return the idle time in seconds since last access.
+    pub fn idle_seconds(&self) -> u64 {
+        now_seconds().saturating_sub(self.last_access)
     }
 
     /// Check if this entry has expired.

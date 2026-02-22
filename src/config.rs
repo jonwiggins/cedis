@@ -30,6 +30,11 @@ pub struct Config {
     pub list_compress_depth: i64,
     pub zset_max_listpack_entries: u64,
     pub zset_max_listpack_value: u64,
+    // Slowlog
+    /// Slowlog threshold in microseconds. Commands slower than this are logged. -1 to disable.
+    pub slowlog_log_slower_than: i64,
+    /// Maximum number of slowlog entries to keep.
+    pub slowlog_max_len: usize,
     // Debug flags
     pub active_expire_enabled: bool,
     // Replication
@@ -65,6 +70,8 @@ impl Default for Config {
             list_compress_depth: 0,
             zset_max_listpack_entries: 128,
             zset_max_listpack_value: 64,
+            slowlog_log_slower_than: 10_000, // 10ms in microseconds (Redis default)
+            slowlog_max_len: 128,
             active_expire_enabled: true,
             replicaof: None,
             replica_read_only: true,
@@ -220,6 +227,8 @@ impl Config {
                     .collect();
                 Some(s.join(" "))
             }
+            "slowlog-log-slower-than" => Some(self.slowlog_log_slower_than.to_string()),
+            "slowlog-max-len" => Some(self.slowlog_max_len.to_string()),
             "repl-backlog-size" => Some(self.repl_backlog_size.to_string()),
             "replica-read-only" | "slave-read-only" => {
                 Some(if self.replica_read_only { "yes" } else { "no" }.to_string())
@@ -313,6 +322,15 @@ impl Config {
             "zset-max-ziplist-value" | "zset-max-listpack-value" => {
                 self.zset_max_listpack_value =
                     value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "slowlog-log-slower-than" => {
+                self.slowlog_log_slower_than =
+                    value.parse().map_err(|_| "Invalid value".to_string())?;
+                Ok(())
+            }
+            "slowlog-max-len" => {
+                self.slowlog_max_len = value.parse().map_err(|_| "Invalid value".to_string())?;
                 Ok(())
             }
             _ => {

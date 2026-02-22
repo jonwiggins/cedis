@@ -58,7 +58,7 @@ impl Database {
         self.version_seq
     }
 
-    /// Get a value, performing lazy expiration.
+    /// Get a value, performing lazy expiration and updating access time.
     pub fn get(&mut self, key: &str) -> Option<&Entry> {
         // Lazy expiration
         if self.is_expired(key) {
@@ -66,15 +66,22 @@ impl Database {
             self.lazy_expired_count += 1;
             return None;
         }
+        // Update access time for LRU tracking
+        if let Some(entry) = self.data.get_mut(key) {
+            entry.touch_access();
+        }
         self.data.get(key)
     }
 
-    /// Get a mutable value, performing lazy expiration.
+    /// Get a mutable value, performing lazy expiration and updating access time.
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Entry> {
         if self.is_expired(key) {
             self.data.remove(key);
             self.lazy_expired_count += 1;
             return None;
+        }
+        if let Some(entry) = self.data.get_mut(key) {
+            entry.touch_access();
         }
         self.data.get_mut(key)
     }
@@ -380,6 +387,42 @@ impl Database {
             .min_by_key(|(_, exp)| *exp)
             .map(|(k, _)| k);
         if let Some(key) = key {
+            self.data.remove(&key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Evict the least recently used key (sampled LRU). Returns true if a key was evicted.
+    pub fn evict_one_allkeys_lru(&mut self) -> bool {
+        use rand::seq::IteratorRandom;
+        let mut rng = rand::thread_rng();
+        // Sample 5 random keys, evict the one with the oldest access time
+        let samples: Vec<(String, u64)> = self
+            .data
+            .iter()
+            .map(|(k, e)| (k.clone(), e.last_access))
+            .choose_multiple(&mut rng, 5);
+        if let Some((key, _)) = samples.into_iter().min_by_key(|(_, access)| *access) {
+            self.data.remove(&key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Evict the least recently used key that has an expiry (sampled volatile LRU).
+    pub fn evict_one_volatile_lru(&mut self) -> bool {
+        use rand::seq::IteratorRandom;
+        let mut rng = rand::thread_rng();
+        let samples: Vec<(String, u64)> = self
+            .data
+            .iter()
+            .filter(|(_, e)| e.expires_at.is_some())
+            .map(|(k, e)| (k.clone(), e.last_access))
+            .choose_multiple(&mut rng, 5);
+        if let Some((key, _)) = samples.into_iter().min_by_key(|(_, access)| *access) {
             self.data.remove(&key);
             true
         } else {
