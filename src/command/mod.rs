@@ -227,33 +227,18 @@ pub async fn dispatch(
         "BZMPOP" => sorted_set::cmd_bzmpop(args, store, client).await,
 
         // Streams
-        "XADD" => stream::cmd_xadd(args, store, client).await,
+        "XADD" => stream::cmd_xadd(args, store, client, key_watcher).await,
         "XLEN" => stream::cmd_xlen(args, store, client).await,
         "XRANGE" => stream::cmd_xrange(args, store, client).await,
         "XREVRANGE" => stream::cmd_xrevrange(args, store, client).await,
         "XREAD" => stream::cmd_xread(args, store, client).await,
         "XTRIM" => stream::cmd_xtrim(args, store, client).await,
-        "XGROUP" => {
-            let sub = args
-                .first()
-                .and_then(|a| a.to_string_lossy())
-                .map(|s| s.to_uppercase())
-                .unwrap_or_default();
-            match sub.as_str() {
-                "CREATE" => RespValue::ok(),
-                "DESTROY" => RespValue::integer(0),
-                "CREATECONSUMER" => RespValue::integer(1),
-                "DELCONSUMER" => RespValue::integer(0),
-                "SETID" => RespValue::ok(),
-                _ => RespValue::error(
-                    "ERR unknown subcommand or wrong number of arguments for 'XGROUP' command",
-                ),
-            }
-        }
-        "XACK" => RespValue::integer(0),
-        "XCLAIM" => RespValue::array(vec![]),
-        "XPENDING" => RespValue::array(vec![]),
-        "XREADGROUP" => RespValue::null_array(),
+        "XGROUP" => stream::cmd_xgroup(args, store, client).await,
+        "XACK" => stream::cmd_xack(args, store, client).await,
+        "XCLAIM" => stream::cmd_xclaim(args, store, client).await,
+        "XAUTOCLAIM" => stream::cmd_xautoclaim(args, store, client).await,
+        "XPENDING" => stream::cmd_xpending(args, store, client).await,
+        "XREADGROUP" => stream::cmd_xreadgroup(args, store, client, key_watcher).await,
         "XDEL" => stream::cmd_xdel(args, store, client).await,
         "XINFO" => stream::cmd_xinfo(args, store, client).await,
 
@@ -575,13 +560,35 @@ pub async fn dispatch(
                 _ => RespValue::ok(),
             }
         }
+        "REPLCONF" => crate::replication::master::handle_replconf(args),
         "REPLICAOF" | "SLAVEOF" => {
-            // Replication not implemented; just return OK
-            RespValue::ok()
+            // REPLICAOF host port | REPLICAOF NO ONE
+            if args.len() != 2 {
+                return wrong_arg_count("replicaof");
+            }
+            let host = match arg_to_string(&args[0]) {
+                Some(h) => h,
+                None => return RespValue::error("ERR invalid host"),
+            };
+            let port_str = match arg_to_string(&args[1]) {
+                Some(p) => p,
+                None => return RespValue::error("ERR invalid port"),
+            };
+
+            if host.eq_ignore_ascii_case("NO") && port_str.eq_ignore_ascii_case("ONE") {
+                // Promote to master - just return OK for now
+                // Full implementation would cancel sync loop and generate new replid
+                RespValue::ok()
+            } else {
+                // Set as replica - just return OK
+                // The actual sync loop is started at server startup time via config
+                RespValue::ok()
+            }
         }
         "SYNC" | "PSYNC" => {
-            // Return an empty RDB dump so TCL test framework's
-            // attach_to_replication_stream can consume it without crashing
+            // PSYNC is handled at the connection level in handle_connection.
+            // If we get here, it means PSYNC was dispatched normally (e.g., in a MULTI).
+            // Return an empty bulk for compatibility.
             RespValue::bulk_string(vec![])
         }
         _ => {
@@ -740,6 +747,7 @@ fn is_known_command(cmd: &str) -> bool {
             | "XCLAIM"
             | "XPENDING"
             | "XREADGROUP"
+            | "XAUTOCLAIM"
             | "XDEL"
             | "XINFO"
             | "SETBIT"
@@ -825,6 +833,7 @@ fn is_known_command(cmd: &str) -> bool {
             | "SLAVEOF"
             | "SYNC"
             | "PSYNC"
+            | "REPLCONF"
             | "DIGEST"
             | "DELEX"
             | "MSETEX"

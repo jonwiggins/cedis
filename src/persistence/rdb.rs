@@ -19,14 +19,22 @@ const RDB_TYPE_HASH: u8 = 4;
 const RDB_MAGIC: &[u8] = b"REDIS";
 const RDB_VERSION: &[u8] = b"0011";
 
-/// Write the data store to an RDB file.
+/// Write the data store to an RDB file (atomic via temp file + rename).
 pub fn save(store: &DataStore, path: &str) -> io::Result<()> {
     let tmp_path = format!("{path}.tmp");
     let mut file = std::fs::File::create(&tmp_path)?;
+    save_to_writer(&mut file, store)?;
+    file.flush()?;
+    drop(file);
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
 
+/// Write the data store to any writer in RDB format.
+pub fn save_to_writer(w: &mut impl Write, store: &DataStore) -> io::Result<()> {
     // Magic + version
-    file.write_all(RDB_MAGIC)?;
-    file.write_all(RDB_VERSION)?;
+    w.write_all(RDB_MAGIC)?;
+    w.write_all(RDB_VERSION)?;
 
     for (db_index, db) in store.databases.iter().enumerate() {
         let entries: Vec<_> = db.iter().collect();
@@ -35,8 +43,8 @@ pub fn save(store: &DataStore, path: &str) -> io::Result<()> {
         }
 
         // SELECTDB
-        file.write_all(&[RDB_OPCODE_SELECTDB])?;
-        write_length(&mut file, db_index as u64)?;
+        w.write_all(&[RDB_OPCODE_SELECTDB])?;
+        write_length(w, db_index as u64)?;
 
         // RESIZEDB
         let total = entries.len();
@@ -44,60 +52,60 @@ pub fn save(store: &DataStore, path: &str) -> io::Result<()> {
             .iter()
             .filter(|(_, e)| e.expires_at.is_some())
             .count();
-        file.write_all(&[RDB_OPCODE_RESIZEDB])?;
-        write_length(&mut file, total as u64)?;
-        write_length(&mut file, expires as u64)?;
+        w.write_all(&[RDB_OPCODE_RESIZEDB])?;
+        write_length(w, total as u64)?;
+        write_length(w, expires as u64)?;
 
         for (key, entry) in &entries {
             // Expiry
             if let Some(exp) = entry.expires_at {
-                file.write_all(&[RDB_OPCODE_EXPIRETIME_MS])?;
-                file.write_all(&exp.to_le_bytes())?;
+                w.write_all(&[RDB_OPCODE_EXPIRETIME_MS])?;
+                w.write_all(&exp.to_le_bytes())?;
             }
 
             // Type byte + key + value
             match &entry.value {
                 RedisValue::String(s) => {
-                    file.write_all(&[RDB_TYPE_STRING])?;
-                    write_string(&mut file, key.as_bytes())?;
-                    write_string(&mut file, s.as_bytes())?;
+                    w.write_all(&[RDB_TYPE_STRING])?;
+                    write_string(w, key.as_bytes())?;
+                    write_string(w, s.as_bytes())?;
                 }
                 RedisValue::List(list) => {
-                    file.write_all(&[RDB_TYPE_LIST])?;
-                    write_string(&mut file, key.as_bytes())?;
+                    w.write_all(&[RDB_TYPE_LIST])?;
+                    write_string(w, key.as_bytes())?;
                     let items: Vec<_> = list.iter().collect();
-                    write_length(&mut file, items.len() as u64)?;
+                    write_length(w, items.len() as u64)?;
                     for item in items {
-                        write_string(&mut file, item)?;
+                        write_string(w, item)?;
                     }
                 }
                 RedisValue::Set(set) => {
-                    file.write_all(&[RDB_TYPE_SET])?;
-                    write_string(&mut file, key.as_bytes())?;
+                    w.write_all(&[RDB_TYPE_SET])?;
+                    write_string(w, key.as_bytes())?;
                     let members = set.members();
-                    write_length(&mut file, members.len() as u64)?;
+                    write_length(w, members.len() as u64)?;
                     for member in members {
-                        write_string(&mut file, member)?;
+                        write_string(w, member)?;
                     }
                 }
                 RedisValue::SortedSet(zset) => {
-                    file.write_all(&[RDB_TYPE_ZSET])?;
-                    write_string(&mut file, key.as_bytes())?;
+                    w.write_all(&[RDB_TYPE_ZSET])?;
+                    write_string(w, key.as_bytes())?;
                     let items: Vec<_> = zset.iter().collect();
-                    write_length(&mut file, items.len() as u64)?;
+                    write_length(w, items.len() as u64)?;
                     for (member, score) in items {
-                        write_string(&mut file, member)?;
-                        file.write_all(&score.to_le_bytes())?;
+                        write_string(w, member)?;
+                        w.write_all(&score.to_le_bytes())?;
                     }
                 }
                 RedisValue::Hash(hash) => {
-                    file.write_all(&[RDB_TYPE_HASH])?;
-                    write_string(&mut file, key.as_bytes())?;
+                    w.write_all(&[RDB_TYPE_HASH])?;
+                    write_string(w, key.as_bytes())?;
                     let fields: Vec<_> = hash.iter().collect();
-                    write_length(&mut file, fields.len() as u64)?;
+                    write_length(w, fields.len() as u64)?;
                     for (field, value) in fields {
-                        write_string(&mut file, field.as_bytes())?;
-                        write_string(&mut file, value)?;
+                        write_string(w, field.as_bytes())?;
+                        write_string(w, value)?;
                     }
                 }
                 RedisValue::Stream(_) => {
@@ -114,24 +122,31 @@ pub fn save(store: &DataStore, path: &str) -> io::Result<()> {
     }
 
     // EOF + 8 byte checksum (0 for now)
-    file.write_all(&[RDB_OPCODE_EOF])?;
-    file.write_all(&[0u8; 8])?;
-    file.flush()?;
-    drop(file);
-
-    // Atomic rename
-    std::fs::rename(&tmp_path, path)?;
+    w.write_all(&[RDB_OPCODE_EOF])?;
+    w.write_all(&[0u8; 8])?;
     Ok(())
+}
+
+/// Serialize the data store to an in-memory RDB byte vector.
+pub fn save_to_bytes(store: &DataStore) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(4096);
+    save_to_writer(&mut buf, store)?;
+    Ok(buf)
 }
 
 /// Load an RDB file into a data store.
 pub fn load(path: &str, num_databases: usize) -> io::Result<DataStore> {
     let mut file = std::fs::File::open(path)?;
+    load_from_reader(&mut file, num_databases)
+}
+
+/// Load an RDB from any reader into a data store.
+pub fn load_from_reader(r: &mut impl Read, num_databases: usize) -> io::Result<DataStore> {
     let mut store = DataStore::new(num_databases);
 
     // Read magic
     let mut magic = [0u8; 5];
-    file.read_exact(&mut magic)?;
+    r.read_exact(&mut magic)?;
     if magic != *RDB_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -141,21 +156,21 @@ pub fn load(path: &str, num_databases: usize) -> io::Result<DataStore> {
 
     // Read version
     let mut version = [0u8; 4];
-    file.read_exact(&mut version)?;
+    r.read_exact(&mut version)?;
 
     let mut current_db = 0usize;
     let mut next_expiry: Option<u64> = None;
 
     loop {
         let mut byte = [0u8; 1];
-        if file.read_exact(&mut byte).is_err() {
+        if r.read_exact(&mut byte).is_err() {
             break;
         }
 
         match byte[0] {
             RDB_OPCODE_EOF => break,
             RDB_OPCODE_SELECTDB => {
-                current_db = read_length(&mut file)? as usize;
+                current_db = read_length(r)? as usize;
                 if current_db >= num_databases {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -164,23 +179,23 @@ pub fn load(path: &str, num_databases: usize) -> io::Result<DataStore> {
                 }
             }
             RDB_OPCODE_RESIZEDB => {
-                let _db_size = read_length(&mut file)?;
-                let _expires_size = read_length(&mut file)?;
+                let _db_size = read_length(r)?;
+                let _expires_size = read_length(r)?;
             }
             RDB_OPCODE_EXPIRETIME_MS => {
                 let mut buf = [0u8; 8];
-                file.read_exact(&mut buf)?;
+                r.read_exact(&mut buf)?;
                 next_expiry = Some(u64::from_le_bytes(buf));
             }
             0xFD => {
                 // EXPIRETIME in seconds
                 let mut buf = [0u8; 4];
-                file.read_exact(&mut buf)?;
+                r.read_exact(&mut buf)?;
                 next_expiry = Some(u32::from_le_bytes(buf) as u64 * 1000);
             }
             type_byte => {
-                let key = read_string_as_string(&mut file)?;
-                let value = read_value(&mut file, type_byte)?;
+                let key = read_string_as_string(r)?;
+                let value = read_value(r, type_byte)?;
 
                 let mut entry = Entry::new(value);
                 if let Some(exp) = next_expiry.take() {

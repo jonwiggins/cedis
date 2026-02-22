@@ -15,6 +15,7 @@ pub mod glob;
 pub mod keywatcher;
 pub mod persistence;
 pub mod pubsub;
+pub mod replication;
 pub mod resp;
 pub mod scripting;
 pub mod server;

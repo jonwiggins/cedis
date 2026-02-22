@@ -13,9 +13,10 @@ fn start_server(port: u16) -> tokio::task::JoinHandle<()> {
     let store = Arc::new(RwLock::new(cedis::store::DataStore::new(num_dbs)));
     let pubsub = Arc::new(RwLock::new(cedis::pubsub::PubSubRegistry::new()));
     let aof = Arc::new(Mutex::new(cedis::persistence::aof::AofWriter::new()));
+    let repl_state = Arc::new(RwLock::new(cedis::replication::ReplicationState::new()));
 
     tokio::spawn(async move {
-        let _ = cedis::server::run_server(store, config, pubsub, aof).await;
+        let _ = cedis::server::run_server(store, config, pubsub, aof, repl_state).await;
     })
 }
 

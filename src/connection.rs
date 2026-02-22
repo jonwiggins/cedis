@@ -34,6 +34,9 @@ pub struct ClientState {
 
     // Monitor mode
     pub in_monitor: bool,
+
+    // Replication: true if this client is processing replicated commands from master
+    pub is_replication_client: bool,
 }
 
 impl Default for ClientState {
@@ -57,6 +60,7 @@ impl ClientState {
             multi_error: false,
             subscriptions: 0,
             in_monitor: false,
+            is_replication_client: false,
         }
     }
 

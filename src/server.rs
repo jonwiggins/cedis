@@ -4,6 +4,7 @@ use crate::connection::{ClientState, MonitorSender, new_monitor_sender};
 use crate::keywatcher::{KeyWatcher, SharedKeyWatcher};
 use crate::persistence::aof::SharedAofWriter;
 use crate::pubsub::{PubSubReceiver, SharedPubSub};
+use crate::replication::{ReplicationRole, SharedReplicationState};
 use crate::resp::{RespParser, RespValue};
 use crate::scripting::ScriptCache;
 use crate::store::SharedStore;
@@ -23,6 +24,7 @@ pub async fn run_server(
     config: SharedConfig,
     pubsub: SharedPubSub,
     aof: SharedAofWriter,
+    repl_state: SharedReplicationState,
 ) -> std::io::Result<()> {
     let (bind, port) = {
         let cfg = config.read().await;
@@ -66,6 +68,36 @@ pub async fn run_server(
         memory_eviction_loop(store_clone, config_clone).await;
     });
 
+    // If configured as replica, start sync loop
+    {
+        let cfg = config.read().await;
+        if let Some((ref host, port)) = cfg.replicaof {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            {
+                let mut state = repl_state.write().await;
+                state.role = ReplicationRole::Replica;
+                state.master_host = Some(host.clone());
+                state.master_port = Some(port);
+                state.cancel = Some(cancel.clone());
+            }
+
+            let host = host.clone();
+            let store_c = store.clone();
+            let config_c = config.clone();
+            let repl_c = repl_state.clone();
+            let pubsub_c = pubsub.clone();
+            let kw_c = key_watcher.clone();
+            let sc_c = script_cache.clone();
+
+            tokio::spawn(async move {
+                crate::replication::replica::replica_sync_loop(
+                    host, port, store_c, config_c, repl_c, pubsub_c, kw_c, sc_c, cancel,
+                )
+                .await;
+            });
+        }
+    }
+
     // Accept loop with graceful shutdown on ctrl-c
     loop {
         tokio::select! {
@@ -81,9 +113,10 @@ pub async fn run_server(
                 let key_watcher = key_watcher.clone();
                 let script_cache = script_cache.clone();
                 let monitor_tx = monitor_tx.clone();
+                let repl_state = repl_state.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher, script_cache, monitor_tx).await {
+                    if let Err(e) = handle_connection(stream, store, config, pubsub, aof, change_counter, key_watcher, script_cache, monitor_tx, repl_state).await {
                         debug!("Connection error from {peer_addr}: {e}");
                     }
                     debug!("Connection closed: {peer_addr}");
@@ -111,6 +144,7 @@ async fn handle_connection(
     key_watcher: SharedKeyWatcher,
     script_cache: ScriptCache,
     monitor_tx: MonitorSender,
+    repl_state: SharedReplicationState,
 ) -> std::io::Result<()> {
     let mut client = ClientState::new();
     let mut buf = BytesMut::with_capacity(4096);
@@ -141,6 +175,46 @@ async fn handle_connection(
                     continue;
                 }
                 Ok(Some(value)) => {
+                    // Check if this is a PSYNC/SYNC command - needs to take over connection
+                    let is_psync = matches!(
+                        &value,
+                        RespValue::Array(Some(items)) if !items.is_empty()
+                            && matches!(
+                                items[0].to_string_lossy().map(|s| s.to_uppercase()).as_deref(),
+                                Some("PSYNC") | Some("SYNC")
+                            )
+                    );
+
+                    if is_psync && let RespValue::Array(Some(ref items)) = value {
+                        let (replid, offset) = if items.len() >= 3 {
+                            let rid = items[1].to_string_lossy().unwrap_or("?".to_string());
+                            let off: i64 = items[2]
+                                .to_string_lossy()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(-1);
+                            (rid, off)
+                        } else {
+                            ("?".to_string(), -1i64)
+                        };
+
+                        let backlog_size = {
+                            let cfg = config.read().await;
+                            cfg.repl_backlog_size
+                        };
+
+                        // Hand off to PSYNC handler - this takes over the connection
+                        crate::replication::master::handle_psync(
+                            stream,
+                            replid,
+                            offset,
+                            &store,
+                            &repl_state,
+                            backlog_size,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+
                     // Check if this is a MONITOR command
                     let is_monitor = matches!(
                         &value,
@@ -160,6 +234,7 @@ async fn handle_connection(
                         &key_watcher,
                         &script_cache,
                         &monitor_tx,
+                        &repl_state,
                     )
                     .await;
 
@@ -317,6 +392,12 @@ fn is_write_command(cmd: &str) -> bool {
             | "PFMERGE"
             | "XADD"
             | "XTRIM"
+            | "XDEL"
+            | "XGROUP"
+            | "XACK"
+            | "XCLAIM"
+            | "XAUTOCLAIM"
+            | "XREADGROUP"
             | "BITOP"
             | "GEOADD"
             | "COPY"
@@ -342,6 +423,7 @@ async fn process_command(
     key_watcher: &SharedKeyWatcher,
     script_cache: &ScriptCache,
     monitor_tx: &MonitorSender,
+    repl_state: &SharedReplicationState,
 ) -> RespValue {
     let items = match value {
         RespValue::Array(Some(items)) if !items.is_empty() => items,
@@ -381,6 +463,21 @@ async fn process_command(
         return RespValue::error("NOAUTH Authentication required.");
     }
 
+    // Read-only enforcement for replicas
+    if !client.is_replication_client {
+        let is_replica = {
+            let state = repl_state.read().await;
+            state.role == ReplicationRole::Replica
+        };
+        let is_readonly = {
+            let cfg = config.read().await;
+            cfg.replica_read_only
+        };
+        if is_replica && is_readonly && is_write_command(&cmd_name) {
+            return RespValue::error("READONLY You can't write against a read only replica.");
+        }
+    }
+
     // In subscribe mode, only allow certain commands
     if client.in_subscribe_mode() {
         match cmd_name.as_str() {
@@ -407,9 +504,9 @@ async fn process_command(
         ]);
     }
 
-    // Log write commands to AOF before executing
+    // Log write commands to AOF before executing (skip for replication clients)
     let is_write = is_write_command(&cmd_name);
-    if is_write {
+    if is_write && !client.is_replication_client {
         let mut aof = aof.lock().await;
         if aof.is_active() {
             let _ = aof.log_command(&cmd_name, args);
@@ -465,6 +562,25 @@ async fn process_command(
                     db.touch(&k);
                 }
             }
+        }
+    }
+
+    // Replicate write commands to connected replicas (skip for replication clients)
+    if is_write && !client.is_replication_client {
+        let mut state = repl_state.write().await;
+        if state.role == ReplicationRole::Master && !state.replicas.is_empty() {
+            // Serialize the command to RESP
+            let mut cmd_parts = vec![items[0].clone()];
+            cmd_parts.extend_from_slice(args);
+            let resp_cmd = RespValue::Array(Some(cmd_parts));
+            let serialized = resp_cmd.serialize();
+
+            state.ensure_backlog({
+                let cfg = config.read().await;
+                cfg.repl_backlog_size
+            });
+            state.feed_backlog(&serialized);
+            state.propagate_to_replicas(&serialized);
         }
     }
 

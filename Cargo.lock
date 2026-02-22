@@ -80,6 +80,7 @@ dependencies = [
  "sha1_smol",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

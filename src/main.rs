@@ -2,6 +2,7 @@ use cedis::config::Config;
 use cedis::persistence::aof::{AofWriter, FsyncPolicy};
 use cedis::persistence::rdb;
 use cedis::pubsub::PubSubRegistry;
+use cedis::replication::ReplicationState;
 use cedis::server;
 use cedis::store::DataStore;
 use std::sync::Arc;
@@ -59,6 +60,7 @@ async fn main() -> std::io::Result<()> {
     let config = Arc::new(RwLock::new(config));
     let store = Arc::new(RwLock::new(store));
     let pubsub = Arc::new(RwLock::new(PubSubRegistry::new()));
+    let repl_state = Arc::new(RwLock::new(ReplicationState::new()));
 
     // Set up AOF writer
     let mut aof_writer = AofWriter::new();
@@ -71,5 +73,5 @@ async fn main() -> std::io::Result<()> {
     }
     let aof = Arc::new(Mutex::new(aof_writer));
 
-    server::run_server(store, config, pubsub, aof).await
+    server::run_server(store, config, pubsub, aof, repl_state).await
 }

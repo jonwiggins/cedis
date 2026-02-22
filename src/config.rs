@@ -32,6 +32,10 @@ pub struct Config {
     pub zset_max_listpack_value: u64,
     // Debug flags
     pub active_expire_enabled: bool,
+    // Replication
+    pub replicaof: Option<(String, u16)>,
+    pub replica_read_only: bool,
+    pub repl_backlog_size: usize,
 }
 
 impl Default for Config {
@@ -62,6 +66,9 @@ impl Default for Config {
             zset_max_listpack_entries: 128,
             zset_max_listpack_value: 64,
             active_expire_enabled: true,
+            replicaof: None,
+            replica_read_only: true,
+            repl_backlog_size: 1_048_576, // 1MB
         }
     }
 }
@@ -140,6 +147,29 @@ impl Config {
                         i += 1;
                     }
                 }
+                "--replicaof" | "--slaveof" => {
+                    if i + 2 < args.len() {
+                        let host = args[i + 1].clone();
+                        if let Ok(port) = args[i + 2].parse::<u16>() {
+                            if host.eq_ignore_ascii_case("no")
+                                && args[i + 2].eq_ignore_ascii_case("one")
+                            {
+                                config.replicaof = None;
+                            } else {
+                                config.replicaof = Some((host, port));
+                            }
+                        }
+                        i += 2;
+                    }
+                }
+                "--repl-backlog-size" => {
+                    if i + 1 < args.len() {
+                        if let Ok(s) = args[i + 1].parse() {
+                            config.repl_backlog_size = s;
+                        }
+                        i += 1;
+                    }
+                }
                 _ => {}
             }
             i += 1;
@@ -189,6 +219,10 @@ impl Config {
                     .map(|(secs, changes)| format!("{secs} {changes}"))
                     .collect();
                 Some(s.join(" "))
+            }
+            "repl-backlog-size" => Some(self.repl_backlog_size.to_string()),
+            "replica-read-only" | "slave-read-only" => {
+                Some(if self.replica_read_only { "yes" } else { "no" }.to_string())
             }
             _ => None,
         }

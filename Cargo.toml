@@ -12,6 +12,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 sha1_smol = "1"
+tokio-util = "0.7"
 
 [dev-dependencies]
 redis = { version = "0.27", features = ["tokio-comp"] }
