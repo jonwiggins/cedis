@@ -198,7 +198,7 @@ impl PubSubRegistry {
 
     /// Get the number of active pattern subscriptions (for PUBSUB NUMPAT).
     pub fn numpat(&self) -> usize {
-        self.patterns.values().map(|s| s.len()).sum()
+        self.patterns.len()
     }
 
     /// Get the channels a specific client is subscribed to.

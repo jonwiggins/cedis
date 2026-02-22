@@ -278,8 +278,13 @@ impl Database {
         }
     }
 
-    fn is_expired(&self, key: &str) -> bool {
+    pub fn is_expired(&self, key: &str) -> bool {
         self.data.get(key).is_some_and(|entry| entry.is_expired())
+    }
+
+    /// Check if a key exists and is not expired (i.e., logically alive).
+    pub fn key_alive(&self, key: &str) -> bool {
+        self.data.get(key).is_some_and(|entry| !entry.is_expired())
     }
 
     /// Get keys with expiry info for persistence

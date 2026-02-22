@@ -505,7 +505,12 @@ async fn process_command(
     }
 
     // Log write commands to AOF before executing (skip for replication clients)
-    let is_write = is_write_command(&cmd_name);
+    let is_write = is_write_command(&cmd_name)
+        || ((cmd_name == "SORT" || cmd_name == "SORT_RO")
+            && args.iter().any(|a| {
+                a.to_string_lossy()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("STORE"))
+            }));
     if is_write && !client.is_replication_client {
         let mut aof = aof.lock().await;
         if aof.is_active() {
@@ -546,7 +551,12 @@ async fn process_command(
             "DEL" | "UNLINK" => {
                 for a in args {
                     if let Some(k) = a.to_string_lossy() {
-                        db.touch(&k);
+                        // Only touch keys that were previously written to,
+                        // so DEL on a non-existent key doesn't create a
+                        // spurious version entry that breaks WATCH.
+                        if db.key_version(&k) > 0 {
+                            db.touch(&k);
+                        }
                     }
                 }
             }
@@ -555,6 +565,22 @@ async fn process_command(
                     if let Some(k) = args[i].to_string_lossy() {
                         db.touch(&k);
                     }
+                }
+            }
+            "SORT" | "SORT_RO" => {
+                // Only touch the STORE destination key (the key being written to).
+                // Don't touch the source key — SORT only reads from it.
+                let mut i = 1;
+                while i < args.len() {
+                    if let Some(opt) = args[i].to_string_lossy()
+                        && opt.eq_ignore_ascii_case("STORE")
+                    {
+                        if let Some(dest) = args.get(i + 1).and_then(|a| a.to_string_lossy()) {
+                            db.touch(&dest);
+                        }
+                        break;
+                    }
+                    i += 1;
                 }
             }
             _ => {

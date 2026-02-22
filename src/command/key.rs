@@ -1187,6 +1187,8 @@ pub async fn cmd_sort(args: &[RespValue], store: &SharedStore, client: &ClientSt
         if desc {
             elements.reverse();
         }
+    } else if desc {
+        elements.reverse();
     }
 
     // Apply LIMIT

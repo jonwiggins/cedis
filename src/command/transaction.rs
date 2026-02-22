@@ -42,29 +42,32 @@ pub fn cmd_exec<'a>(
             return RespValue::error("EXECABORT Transaction discarded because of previous errors.");
         }
 
-        // Check WATCH: compare key versions
+        // Check WATCH: compare key state (alive/dead + version).
+        // A key's "state" is whether it logically exists (not expired) and its version.
+        // If the state at WATCH time matches the state at EXEC time, no conflict.
         if !client.watched_keys.is_empty() {
             let store_guard = store.read().await;
-            for (db_index, key, saved_version, saved_global) in &client.watched_keys {
+            for (db_index, key, saved_version, _saved_global, alive_at_watch) in
+                &client.watched_keys
+            {
                 let db = &store_guard.databases[*db_index];
-                let current_version = db.key_version(key);
-                let current_global = db.global_version();
-                // Key was modified if its version changed, or if touch_all was called
-                if current_version != *saved_version
-                    || (*saved_global > 0
-                        && current_global != *saved_global
-                        && current_version == 0)
-                {
+                let alive_now = db.key_alive(key);
+                let dirty = if *alive_at_watch && alive_now {
+                    // Key was alive at WATCH and is still alive: check version
+                    db.key_version(key) != *saved_version
+                } else if !*alive_at_watch && !alive_now {
+                    // Key was dead at WATCH and is still dead: no change
+                    false
+                } else {
+                    // Key's existence status changed (alive→dead or dead→alive)
+                    true
+                };
+                if dirty {
                     drop(store_guard);
                     client.multi_queue.clear();
                     client.watched_keys.clear();
                     client.watch_dirty = false;
                     return RespValue::null_array();
-                }
-                // Also check if global version advanced past saved (flush happened)
-                if current_global > *saved_global && *saved_version == 0 && current_version == 0 {
-                    // Key didn't exist at watch time and still doesn't, but flush happened
-                    // This is fine - no modification
                 }
             }
             drop(store_guard);
@@ -132,10 +135,11 @@ pub async fn cmd_watch(
 
     for arg in args {
         if let Some(key) = crate::command::arg_to_string(arg) {
+            let alive = db.key_alive(&key);
             let ver = db.key_version(&key);
             client
                 .watched_keys
-                .push((client.db_index, key, ver, global_ver));
+                .push((client.db_index, key, ver, global_ver, alive));
         }
     }
 

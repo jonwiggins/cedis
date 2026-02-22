@@ -150,6 +150,7 @@ pub async fn dispatch(
         "BLPOP" => list::cmd_blpop(args, store, client, key_watcher).await,
         "BRPOP" => list::cmd_brpop(args, store, client, key_watcher).await,
         "BLMOVE" => list::cmd_blmove(args, store, client, key_watcher).await,
+        "BRPOPLPUSH" => list::cmd_brpoplpush(args, store, client, key_watcher).await,
         "BLMPOP" => list::cmd_blmpop(args, store, client, key_watcher).await,
 
         // Hashes
@@ -668,6 +669,7 @@ fn is_known_command(cmd: &str) -> bool {
             | "BLPOP"
             | "BRPOP"
             | "BLMOVE"
+            | "BRPOPLPUSH"
             | "HSET"
             | "HGET"
             | "HDEL"

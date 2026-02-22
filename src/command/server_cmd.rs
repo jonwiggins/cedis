@@ -898,11 +898,29 @@ pub fn cmd_command(args: &[RespValue]) -> RespValue {
             RespValue::array(results)
         }
         "GETKEYS" => {
-            if args.len() >= 3 {
-                RespValue::array(vec![args[2].clone()])
-            } else {
-                RespValue::array(vec![])
+            if args.len() < 3 {
+                return RespValue::array(vec![]);
             }
+            let cmd = arg_to_string(&args[1])
+                .map(|s| s.to_uppercase())
+                .unwrap_or_default();
+            let mut keys = vec![args[2].clone()];
+            // SORT/SORT_RO: also extract the STORE destination key
+            if cmd == "SORT" || cmd == "SORT_RO" {
+                let mut i = 3;
+                while i < args.len() {
+                    if let Some(opt) = arg_to_string(&args[i])
+                        && opt.eq_ignore_ascii_case("STORE")
+                        && i + 1 < args.len()
+                    {
+                        keys.push(args[i + 1].clone());
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                }
+            }
+            RespValue::array(keys)
         }
         "LIST" => {
             let names: Vec<RespValue> = all_command_names()

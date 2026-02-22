@@ -933,11 +933,14 @@ pub async fn cmd_lpos(args: &[RespValue], store: &SharedStore, client: &ClientSt
             "RANK" => {
                 i += 1;
                 rank = match args.get(i).and_then(arg_to_i64) {
-                    Some(r) if r != 0 => r,
-                    _ => {
+                    Some(r) if r != 0 && r != i64::MIN => r,
+                    Some(0) => {
                         return RespValue::error(
                             "ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list",
                         );
+                    }
+                    _ => {
+                        return RespValue::error("ERR value is out of range");
                     }
                 };
             }
@@ -1063,6 +1066,64 @@ pub async fn cmd_blmove(
     let mut store = store.write().await;
     let db = store.db(client.db_index);
     try_lmove(db, &src, &dst, &wherefrom, &whereto).unwrap_or_else(RespValue::null_bulk_string)
+}
+
+pub async fn cmd_brpoplpush(
+    args: &[RespValue],
+    store: &SharedStore,
+    client: &ClientState,
+    key_watcher: &SharedKeyWatcher,
+) -> RespValue {
+    // BRPOPLPUSH source destination timeout
+    if args.len() != 3 {
+        return wrong_arg_count("brpoplpush");
+    }
+    let src = match arg_to_string(&args[0]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+    let dst = match arg_to_string(&args[1]) {
+        Some(k) => k,
+        None => return RespValue::null_bulk_string(),
+    };
+
+    let timeout_dur = match parse_blocking_timeout(&args[2]) {
+        Ok(d) => d,
+        Err(e) => return e,
+    };
+
+    // Try immediate move first
+    {
+        let mut store = store.write().await;
+        let db = store.db(client.db_index);
+        if let Some(result) = try_lmove(db, &src, &dst, "RIGHT", "LEFT") {
+            return result;
+        }
+    }
+
+    let keys = vec![src.clone()];
+    let notify = {
+        let mut watcher = key_watcher.write().await;
+        watcher.register_many(&keys)
+    };
+
+    let notified = tokio::select! {
+        _ = notify.notified() => true,
+        _ = tokio::time::sleep(timeout_dur) => false,
+    };
+
+    {
+        let mut watcher = key_watcher.write().await;
+        watcher.unregister_many(&keys, &notify);
+    }
+
+    if !notified {
+        return RespValue::null_bulk_string();
+    }
+
+    let mut store = store.write().await;
+    let db = store.db(client.db_index);
+    try_lmove(db, &src, &dst, "RIGHT", "LEFT").unwrap_or_else(RespValue::null_bulk_string)
 }
 
 pub async fn cmd_blmpop(
