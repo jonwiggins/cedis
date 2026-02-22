@@ -1572,7 +1572,7 @@ async fn test_pfadd_pfcount() {
         assert_eq!(changed, 1);
 
         let count: i64 = redis::cmd("PFCOUNT").arg("hll").query(&mut conn).unwrap();
-        assert!(count >= 2 && count <= 4); // HLL is approximate
+        assert!((2..=4).contains(&count)); // HLL is approximate
 
         // Adding duplicate should return 0
         let changed: i64 = redis::cmd("PFADD")
@@ -1619,7 +1619,7 @@ async fn test_pfmerge() {
             .arg("merged")
             .query(&mut conn)
             .unwrap();
-        assert!(count >= 3 && count <= 5); // Should be ~4
+        assert!((3..=5).contains(&count)); // Should be ~4
     })
     .await
     .unwrap();
@@ -2063,7 +2063,7 @@ async fn test_geosearch() {
 
         // Should find Catania and Palermo but not Paris
         assert!(
-            result.len() >= 1 && result.len() <= 2,
+            !result.is_empty() && result.len() <= 2,
             "Got {} results",
             result.len()
         );
